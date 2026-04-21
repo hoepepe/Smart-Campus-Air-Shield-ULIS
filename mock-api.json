@@ -1,0 +1,104 @@
+{
+  "_comment": "Mock data giả lập ESP32 gửi lên – thay thế bằng API thật khi nối sensor",
+  "_protocol": "HTTP POST JSON hoặc MQTT topic: campus/sensors/{node_id}",
+  "_pms7003_note": "Dữ liệu đo trực tiếp: pm1, pm25, pm10. AQI và level là suy luận từ bảng EPA.",
+
+  "sensors": {
+    "node-a": {
+      "id": "node-a",
+      "name": "Sân trường ULIS",
+      "location": "Khuôn viên ngoài trời – Cổng chính ULIS, ĐHQGHN",
+      "coordinates": { "lat": 21.0388, "lng": 105.7827 },
+      "type": "outdoor",
+      "hardware": {
+        "sensor": "PMS7003",
+        "mcu": "ESP32-WROOM-32",
+        "interface": "UART",
+        "baud": 9600,
+        "vcc": "5V",
+        "logic": "3.3V TTL",
+        "enclosure": "IP54 outdoor box"
+      },
+      "current": {
+        "timestamp": "2025-01-15T07:32:00+07:00",
+        "pm1_0": 32,
+        "pm2_5": 58,
+        "pm10": 94,
+        "particles_0_3um": 3820,
+        "particles_0_5um": 1104,
+        "particles_1_0um": 345,
+        "particles_2_5um": 46,
+        "particles_5_0um": 12,
+        "particles_10um": 3,
+        "aqi_pm25": 153,
+        "aqi_level": "unhealthy",
+        "rssi_dbm": -67,
+        "uptime_seconds": 86400
+      }
+    },
+
+    "node-b": {
+      "id": "node-b",
+      "name": "Không gian mở",
+      "location": "Hành lang tầng 1 – Tòa nhà A, ULIS",
+      "coordinates": { "lat": 21.0391, "lng": 105.7830 },
+      "type": "semi-outdoor",
+      "hardware": {
+        "sensor": "PMS7003",
+        "mcu": "Arduino Nano + ESP8266 (ESP-01)",
+        "interface": "UART Bridge",
+        "baud": 9600,
+        "vcc": "5V USB",
+        "logic": "3.3V TTL",
+        "enclosure": "ABS plastic box"
+      },
+      "current": {
+        "timestamp": "2025-01-15T07:32:12+07:00",
+        "pm1_0": 18,
+        "pm2_5": 34,
+        "pm10": 55,
+        "particles_0_3um": 2210,
+        "particles_0_5um": 640,
+        "particles_1_0um": 201,
+        "particles_2_5um": 27,
+        "particles_5_0um": 7,
+        "particles_10um": 1,
+        "aqi_pm25": 101,
+        "aqi_level": "sensitive",
+        "rssi_dbm": -72,
+        "uptime_seconds": 43200
+      }
+    }
+  },
+
+  "history_24h": {
+    "_note": "24 điểm dữ liệu, mỗi điểm cách nhau 1 giờ, bắt đầu từ 00:00",
+    "node-a-pm25": [12,10,8,7,9,14,45,78,65,42,38,35,32,30,28,26,30,38,42,36,28,22,18,14],
+    "node-b-pm25": [8,7,6,5,6,10,28,45,38,25,22,20,18,17,16,15,18,22,25,21,17,13,11,9]
+  },
+
+  "alerts": [
+    {
+      "id": "alert-001",
+      "timestamp": "2025-01-15T07:32:00+07:00",
+      "node": "node-a",
+      "level": "high",
+      "trigger": "pm25 > 55",
+      "value": 78,
+      "threshold": 55,
+      "message": "PM2.5 vượt ngưỡng Kém tại Sân trường ULIS",
+      "actions": ["notify_push", "activate_filter", "log_db"]
+    },
+    {
+      "id": "alert-002",
+      "timestamp": "2025-01-15T06:15:00+07:00",
+      "node": "node-b",
+      "level": "medium",
+      "trigger": "pm25 > 35.4",
+      "value": 42,
+      "threshold": 35.4,
+      "message": "Nhóm nhạy cảm cần chú ý tại Không gian mở",
+      "actions": ["notify_sensitive_group", "log_db"]
+    }
+  ]
+}

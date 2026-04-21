@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<title>Smart Campus Air Shield – ULIS</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Outfit:wght@300;400;500;600;700;800&display=swap" rel="stylesheet"/>
+<link rel="stylesheet" href="style.css?v=2"/>
+</head>
+<body>
+<div id="app">
+
+  <!-- SIDEBAR NAV -->
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-logo">
+      <div class="logo-mark">
+        <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
+          <circle cx="14" cy="14" r="13" stroke="#00e5c8" stroke-width="1.2"/>
+          <circle cx="14" cy="14" r="7" stroke="#00e5c8" stroke-width="1.2" stroke-dasharray="3 2"/>
+          <circle cx="14" cy="14" r="3" fill="#00e5c8"/>
+        </svg>
+      </div>
+      <div>
+        <div class="logo-name">Air Shield</div>
+        <div class="logo-sub">Smart Campus · ULIS</div>
+      </div>
+    </div>
+
+    <nav class="nav-links">
+      <a class="nav-link active" data-screen="dashboard" href="#">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+        Dashboard
+      </a>
+      <a class="nav-link" data-screen="sensors" href="#">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/><path d="M4.93 4.93a10 10 0 0 0 0 14.14"/><path d="M16.24 7.76a6 6 0 0 1 0 8.49"/><path d="M7.76 7.76a6 6 0 0 0 0 8.49"/></svg>
+        Cảm biến
+      </a>
+      <a class="nav-link" data-screen="history" href="#">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+        Lịch sử
+      </a>
+      <a class="nav-link" data-screen="ai" href="#">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a10 10 0 1 0 10 10"/><path d="M12 12l8.5-8.5"/><path d="M16 2h6v6"/></svg>
+        AI Dự báo
+      </a>
+      <a class="nav-link" data-screen="alerts" href="#">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 01-3.46 0"/></svg>
+        Cảnh báo
+        <span class="nav-badge" id="alert-count">2</span>
+      </a>
+      <a class="nav-link" data-screen="about" href="#">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+        Dự án
+      </a>
+    </nav>
+
+    <div class="sidebar-status">
+      <div class="status-dot pulse-green"></div>
+      <span>2 node online</span>
+      <span class="status-time" id="clock">--:--:--</span>
+    </div>
+  </aside>
+
+  <!-- MAIN CONTENT -->
+  <main class="main-content">
+
+    <!-- ═══════════════════════ DASHBOARD ═══════════════════════ -->
+    <section class="screen active" id="screen-dashboard">
+      <div class="page-header">
+        <div>
+          <h1 class="page-title">Tổng quan hệ thống</h1>
+          <p class="page-sub">Giám sát thời gian thực · Khuôn viên ULIS Hà Nội</p>
+        </div>
+        <div class="header-actions">
+          <div class="live-chip">
+            <span class="live-dot"></span>LIVE
+          </div>
+          <button class="btn-refresh" onclick="refreshData()">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+            Làm mới
+          </button>
+        </div>
+      </div>
+
+      <!-- SENSOR HERO CARDS -->
+      <div class="sensor-hero-grid" id="hero-grid"></div>
+
+      <!-- SYSTEM METRICS ROW -->
+      <div class="metrics-row">
+        <div class="metric-box">
+          <div class="metric-label">AQI Trung bình khuôn viên</div>
+          <div class="metric-value" id="campus-aqi">--</div>
+          <div class="metric-sub" id="campus-aqi-label">Đang tính...</div>
+        </div>
+        <div class="metric-box">
+          <div class="metric-label">PM2.5 cao nhất hôm nay</div>
+          <div class="metric-value" id="peak-pm25">--</div>
+          <div class="metric-sub">µg/m³</div>
+        </div>
+        <div class="metric-box">
+          <div class="metric-label">Cảnh báo hôm nay</div>
+          <div class="metric-value" id="today-alerts">3</div>
+          <div class="metric-sub">sự kiện vượt ngưỡng</div>
+        </div>
+        <div class="metric-box">
+          <div class="metric-label">Node đang hoạt động</div>
+          <div class="metric-value cyan">2/2</div>
+          <div class="metric-sub">100% uptime</div>
+        </div>
+      </div>
+
+      <!-- CHARTS ROW -->
+      <div class="charts-row">
+        <div class="chart-card wide">
+          <div class="chart-card-header">
+            <span class="chart-title">PM2.5 thời gian thực – 2 node</span>
+            <div class="chart-legend-inline">
+              <span><i style="background:#00e5c8"></i>Sân trường</span>
+              <span><i style="background:#a78bfa"></i>Không gian mở</span>
+            </div>
+          </div>
+          <div class="chart-wrap"><canvas id="liveChart" role="img" aria-label="PM2.5 hai cảm biến theo thời gian thực">Biểu đồ PM2.5 hai cảm biến.</canvas></div>
+        </div>
+        <div class="chart-card">
+          <div class="chart-card-header"><span class="chart-title">Phân bố AQI hôm nay</span></div>
+          <div class="chart-wrap" style="height:160px"><canvas id="pieChart" role="img" aria-label="Phân bố mức AQI trong ngày">Phân bố AQI.</canvas></div>
+          <div class="pie-legend" id="pie-legend"></div>
+        </div>
+      </div>
+
+      <!-- AI INSIGHT STRIP -->
+      <div class="ai-strip" id="ai-strip">
+        <div class="ai-strip-icon">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#00e5c8" stroke-width="2"><path d="M12 2a10 10 0 1 0 10 10"/><path d="M12 12l8.5-8.5"/><path d="M16 2h6v6"/></svg>
+        </div>
+        <div class="ai-strip-content">
+          <div class="ai-strip-label">AI Insight</div>
+          <div class="ai-strip-text" id="ai-insight-text">Đang phân tích dữ liệu...</div>
+        </div>
+        <div class="ai-strip-action" onclick="navigate('ai')">Xem dự báo →</div>
+      </div>
+    </section>
+
+    <!-- ═══════════════════════ SENSORS ═══════════════════════ -->
+    <section class="screen" id="screen-sensors">
+      <div class="page-header">
+        <div>
+          <h1 class="page-title">Chi tiết cảm biến</h1>
+          <p class="page-sub">PMS7003 · UART 9600bps · Cập nhật mỗi 10 giây</p>
+        </div>
+      </div>
+      <div id="sensor-detail-grid"></div>
+    </section>
+
+    <!-- ═══════════════════════ HISTORY ═══════════════════════ -->
+    <section class="screen" id="screen-history">
+      <div class="page-header">
+        <div>
+          <h1 class="page-title">Lịch sử dữ liệu</h1>
+          <p class="page-sub">Phân tích xu hướng theo thời gian</p>
+        </div>
+        <div class="tab-group">
+          <button class="tab active" onclick="switchTab(this,'24h')">24 giờ</button>
+          <button class="tab" onclick="switchTab(this,'7d')">7 ngày</button>
+          <button class="tab" onclick="switchTab(this,'30d')">30 ngày</button>
+        </div>
+      </div>
+      <div class="charts-row">
+        <div class="chart-card wide">
+          <div class="chart-card-header"><span class="chart-title">PM2.5 lịch sử – Sân trường ULIS</span></div>
+          <div class="chart-wrap" style="height:200px"><canvas id="hist1" role="img" aria-label="Lịch sử PM2.5 sân trường">Lịch sử PM2.5.</canvas></div>
+        </div>
+        <div class="chart-card wide">
+          <div class="chart-card-header"><span class="chart-title">PM2.5 lịch sử – Không gian mở</span></div>
+          <div class="chart-wrap" style="height:200px"><canvas id="hist2" role="img" aria-label="Lịch sử PM2.5 không gian mở">Lịch sử PM2.5.</canvas></div>
+        </div>
+      </div>
+      <div class="stat-summary" id="hist-stats"></div>
+    </section>
+
+    <!-- ═══════════════════════ AI FORECAST ═══════════════════════ -->
+    <section class="screen" id="screen-ai">
+      <div class="page-header">
+        <div>
+          <h1 class="page-title">AI Dự báo & Phân tích</h1>
+          <p class="page-sub">Mô hình dự báo dựa trên chuỗi thời gian · Rule-based AI</p>
+        </div>
+      </div>
+      <div class="ai-grid">
+        <div class="ai-forecast-card">
+          <div class="ai-fc-header">
+            <div class="ai-fc-badge">AI FORECAST</div>
+            <div class="ai-fc-node">Sân trường ULIS</div>
+          </div>
+          <div class="chart-wrap" style="height:180px"><canvas id="forecastChart1" role="img" aria-label="Dự báo PM2.5 sân trường">Dự báo PM2.5.</canvas></div>
+          <div class="ai-fc-insight" id="fc-insight-1"></div>
+        </div>
+        <div class="ai-forecast-card">
+          <div class="ai-fc-header">
+            <div class="ai-fc-badge">AI FORECAST</div>
+            <div class="ai-fc-node">Không gian mở</div>
+          </div>
+          <div class="chart-wrap" style="height:180px"><canvas id="forecastChart2" role="img" aria-label="Dự báo PM2.5 không gian mở">Dự báo PM2.5.</canvas></div>
+          <div class="ai-fc-insight" id="fc-insight-2"></div>
+        </div>
+      </div>
+      <div class="ai-rules-section">
+        <div class="section-label">Hệ thống ra quyết định (Rule Engine)</div>
+        <div class="rules-grid" id="rules-grid"></div>
+      </div>
+      <div class="ai-architecture">
+        <div class="section-label">Kiến trúc 3 lớp hệ thống</div>
+        <div class="arch-diagram" id="arch-diagram"></div>
+      </div>
+    </section>
+
+    <!-- ═══════════════════════ ALERTS ═══════════════════════ -->
+    <section class="screen" id="screen-alerts">
+      <div class="page-header">
+        <div>
+          <h1 class="page-title">Cảnh báo & Hành động</h1>
+          <p class="page-sub">Tự động sinh từ Rule Engine khi vượt ngưỡng EPA/WHO</p>
+        </div>
+      </div>
+      <div id="alerts-list"></div>
+    </section>
+
+    <!-- ═══════════════════════ ABOUT ═══════════════════════ -->
+    <section class="screen" id="screen-about">
+      <div class="page-header">
+        <div>
+          <h1 class="page-title">Giới thiệu dự án</h1>
+          <p class="page-sub">Smart Campus Air Shield · ULIS 2025</p>
+        </div>
+      </div>
+      <div id="about-content"></div>
+    </section>
+
+  </main>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<script src="app.js?v=2"></script>
+</body>
+</html>
