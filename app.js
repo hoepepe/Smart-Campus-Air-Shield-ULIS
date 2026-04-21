@@ -1,787 +1,729 @@
 /* ═══════════════════════════════════════════════════════════
-   SMART CAMPUS AIR SHIELD – app.js
-   2 cảm biến PMS7003: Sân trường ULIS + Không gian mở
-   Mock data sẵn → nối API ESP32/Firebase sau
+   Smart Campus Air Shield – app.js
+   PWA · ULIS ĐHQGHN · 2 PMS7003 sensors
+   Mock data → plug in real WebSocket/MQTT when hardware ready
 ═══════════════════════════════════════════════════════════ */
 
-/* ── 1. AQI HELPER ── */
+/* ─────────────────────────────────────────
+   1. AQI ENGINE  (US EPA standard)
+   Input: PM2.5 µg/m³ → Output: level object
+───────────────────────────────────────── */
 const AQI = {
-  // PM2.5 → AQI theo US EPA
   fromPM25(pm) {
-    const bp = [
-      [0,    12,   0,   50],
-      [12.1, 35.4, 51,  100],
-      [35.5, 55.4, 101, 150],
-      [55.5, 150.4,151, 200],
-      [150.5,250.4,201, 300],
-      [250.5,500,  301, 500],
+    const bp=[
+      [0,12,0,50],[12.1,35.4,51,100],[35.5,55.4,101,150],
+      [55.5,150.4,151,200],[150.5,250.4,201,300],[250.5,500,301,500]
     ];
-    for (const [lo,hi,ilo,ihi] of bp) {
-      if (pm <= hi) return Math.round(((ihi-ilo)/(hi-lo))*(pm-lo)+ilo);
-    }
+    for(const[lo,hi,ilo,ihi]of bp) if(pm<=hi) return Math.round(((ihi-ilo)/(hi-lo))*(pm-lo)+ilo);
     return 500;
   },
-
   level(pm25) {
-    if (pm25 <= 12)    return {key:'good',    label:'Tốt',            color:'#22c55e', bg:'rgba(34,197,94,.12)',  border:'rgba(34,197,94,.25)'};
-    if (pm25 <= 35.4)  return {key:'moderate',label:'Trung bình',     color:'#f59e0b', bg:'rgba(245,158,11,.12)', border:'rgba(245,158,11,.25)'};
-    if (pm25 <= 55.4)  return {key:'sensitive',label:'Nhóm nhạy cảm', color:'#f97316', bg:'rgba(249,115,22,.12)', border:'rgba(249,115,22,.25)'};
-    if (pm25 <= 150.4) return {key:'unhealthy',label:'Kém',           color:'#f43f5e', bg:'rgba(244,63,94,.12)',  border:'rgba(244,63,94,.25)'};
-    if (pm25 <= 250.4) return {key:'very',     label:'Rất xấu',       color:'#a78bfa', bg:'rgba(167,139,250,.12)',border:'rgba(167,139,250,.25)'};
-    return               {key:'hazardous',label:'Nguy hiểm',      color:'#e11d48', bg:'rgba(225,29,72,.12)',  border:'rgba(225,29,72,.25)'};
-  },
-
-  tips(key) {
-    return {
-      good:     ['Không khí trong lành, thoải mái ra ngoài','Hoạt động thể chất ngoài trời bình thường','Trẻ em vui chơi ngoài trời an toàn'],
-      moderate: ['Nhóm nhạy cảm hạn chế hoạt động ngoài lâu','Mở cửa thông gió ngắn, uống đủ nước','Theo dõi nếu cảm thấy kích ứng mắt mũi'],
-      sensitive:['Trẻ em, người cao tuổi ở trong nhà','Đeo khẩu trang khi ra ngoài','Bật máy lọc không khí trong phòng','Đóng cửa sổ nếu có thể'],
-      unhealthy:['Đeo khẩu trang N95 khi ra ngoài','Hạn chế tối đa hoạt động ngoài trời','Đóng tất cả cửa sổ, bật lọc không khí'],
-      very:     ['Ở trong nhà toàn bộ thời gian','Đeo khẩu trang N95 ngay cả trong nhà','Liên hệ y tế nếu có triệu chứng hô hấp'],
-      hazardous:['KHÔNG ra ngoài – Tình trạng khẩn cấp','Bịt kín cửa và khe hở','Gọi 115 nếu khó thở'],
-    }[key] || [];
+    if(pm25<=12)    return{k:'good',     em:'😊',lbl:'Tốt',            c:'#16a34a',bg:'#f0fdf4',bd:'#bbf7d0',tc:'#14532d'};
+    if(pm25<=35.4)  return{k:'moderate', em:'🙂',lbl:'Trung bình',     c:'#ca8a04',bg:'#fefce8',bd:'#fde68a',tc:'#713f12'};
+    if(pm25<=55.4)  return{k:'sensitive',em:'😐',lbl:'Nhóm nhạy cảm', c:'#ea580c',bg:'#fff7ed',bd:'#fed7aa',tc:'#7c2d12'};
+    if(pm25<=150.4) return{k:'unhealthy',em:'😷',lbl:'Kém',           c:'#dc2626',bg:'#fef2f2',bd:'#fecaca',tc:'#7f1d1d'};
+    if(pm25<=250.4) return{k:'very',     em:'🤢',lbl:'Rất xấu',       c:'#7c3aed',bg:'#f5f3ff',bd:'#ddd6fe',tc:'#3b0764'};
+    return              {k:'hazardous',  em:'☠️', lbl:'Nguy hiểm',     c:'#be123c',bg:'#fff1f2',bd:'#fecdd3',tc:'#881337'};
   }
 };
 
-/* ── 2. MOCK DATA ── */
-// Hàm sinh dữ liệu lịch sử thực tế cho 2 node
-function genHistory(hours, basePM25, variance, peaks) {
-  return Array.from({length: hours}, (_, i) => {
-    let v = basePM25 + (Math.random() - 0.45) * variance;
-    // Rush hour peaks (7–8h, 17–18h)
-    const h = i % 24;
-    if (h >= 7 && h <= 9)   v += peaks * 0.7;
-    if (h >= 17 && h <= 19) v += peaks * 0.5;
-    if (h >= 2  && h <= 5)  v -= peaks * 0.3;
-    return Math.max(2, Math.round(v * 10) / 10);
+/* ─────────────────────────────────────────
+   2. AI ANALYSIS ENGINE
+   Rule-based + trend detection
+   (In production: replace with Python ML model via REST API)
+───────────────────────────────────────── */
+const AI = {
+  // Phân tích xu hướng 3 điểm gần nhất
+  trend(hist) {
+    const last = hist.slice(-4);
+    const slope = (last[last.length-1] - last[0]) / last.length;
+    if (slope > 3)  return {dir:'↑ tăng nhanh', color:'#dc2626', warn:true};
+    if (slope > 0.5) return {dir:'↑ tăng nhẹ',  color:'#ea580c', warn:false};
+    if (slope < -3)  return {dir:'↓ giảm nhanh', color:'#16a34a', warn:false};
+    if (slope < -0.5) return {dir:'↓ giảm nhẹ',  color:'#2dd4a0', warn:false};
+    return {dir:'→ ổn định', color:'#6b7280', warn:false};
+  },
+
+  // Dự báo 6h tới dùng exponential smoothing đơn giản
+  forecast(hist, steps=6) {
+    const alpha = 0.35; // smoothing factor
+    let sm = hist[hist.length-1];
+    const last6 = hist.slice(-6);
+    const slope  = (last6[5]-last6[0])/6;
+    const result = [];
+    for(let i=0;i<steps;i++){
+      // Exponential smoothing + trend + noise
+      const pred = sm + slope * 0.7 + (Math.random()-0.45)*5;
+      sm = alpha*pred + (1-alpha)*sm;
+      result.push(Math.max(2, +sm.toFixed(1)));
+    }
+    return result;
+  },
+
+  // Sinh insight text từ data
+  insight(sensor) {
+    const lv  = AQI.level(sensor.reading.pm25);
+    const tr  = AI.trend(sensor.history);
+    const fc  = AI.forecast(sensor.history);
+    const peak= Math.max(...fc).toFixed(1);
+    const peakLv = AQI.level(parseFloat(peak));
+    const tips = {
+      good:'😊 Không khí tốt — thoải mái hoạt động ngoài trời. Tiếp tục theo dõi!',
+      moderate:`🙂 Trung bình, xu hướng ${tr.dir}. Nhóm nhạy cảm nên hạn chế ở ngoài lâu.`,
+      sensitive:`😐 Nhóm nhạy cảm cần chú ý! Xu hướng ${tr.dir}. Nhớ mang khẩu trang khi ra ngoài.`,
+      unhealthy:`😷 Chất lượng kém, xu hướng ${tr.dir}. Hạn chế ra ngoài, đeo N95 nếu cần thiết.`,
+      very:`🤢 Không khí rất xấu! Ở trong nhà. Xu hướng ${tr.dir}. Dự báo đỉnh ${peak} µg/m³.`,
+      hazardous:'☠️ KHẨN CẤP! Không ra ngoài. Liên hệ y tế nếu có triệu chứng hô hấp.',
+    };
+    return tips[lv.k] || tips.moderate;
+  }
+};
+
+/* ─────────────────────────────────────────
+   3. MOCK DATA
+   Sinh dữ liệu giả lập thực tế 24h
+   Pattern: thấp đêm → tăng giờ cao điểm → ổn trưa → tăng nhẹ chiều
+───────────────────────────────────────── */
+function genHist24(basePM25, variance, rushMultiplier) {
+  return Array.from({length:24}, (_,h) => {
+    let v = basePM25 + (Math.random()-0.45)*variance;
+    if (h>=6 && h<=9)   v += basePM25*rushMultiplier;   // sáng
+    if (h>=16 && h<=19) v += basePM25*rushMultiplier*.6; // chiều
+    if (h>=1  && h<=5)  v -= basePM25*.3;                // khuya
+    return Math.max(2, +v.toFixed(1));
   });
 }
 
-const now = new Date();
-const H24 = 24;
+const hist_A = genHist24(38, 20, 0.7); // Sân trường – outdoor cao hơn
+const hist_B = genHist24(22, 14, 0.45); // Không gian mở – bán trong
 
-// Dữ liệu 24h cho 2 node
-const historyOutdoor = genHistory(H24, 38, 20, 30);   // Sân trường – ngoài trời, cao hơn
-const historyIndoor  = genHistory(H24, 22, 15, 18);   // Không gian mở (hành lang, sảnh)
-
-// Current readings (lấy giờ cuối + jitter nhỏ)
-function currentReading(hist) {
-  const pm25 = hist[hist.length - 1];
-  const pm1  = Math.round(pm25 * 0.65 * 10) / 10;
-  const pm10 = Math.round(pm25 * 1.6  * 10) / 10;
+function makeReading(hist) {
+  const pm25 = hist[hist.length-1];
   return {
-    pm1, pm25, pm10,
-    particles_03: Math.round(1500 + pm25 * 40 + Math.random() * 300),
-    particles_05: Math.round(400  + pm25 * 12 + Math.random() * 80),
-    particles_1:  Math.round(pm25 * 6 + Math.random() * 30),
-    particles_25: Math.round(pm25 * 0.8),
-    temp: 28 + Math.round(Math.random() * 5),
-    humidity: 65 + Math.round(Math.random() * 20),
+    pm25, pm1:+(pm25*.64).toFixed(1), pm10:+(pm25*1.57).toFixed(1),
+    p03:Math.round(1300+pm25*36+Math.random()*220),
+    p05:Math.round(360+pm25*10+Math.random()*65),
+    temp:28+Math.round(Math.random()*6),
+    humidity:62+Math.round(Math.random()*24),
   };
 }
 
-const SENSORS = [
+const NODES = [
   {
-    id: 'node-a',
-    name: 'Sân trường ULIS',
-    location: 'Khuôn viên ngoài trời – Cổng chính Trường ĐH Ngoại ngữ, ĐHQGHN',
-    type: 'outdoor',
-    icon: '🌳',
-    accentColor: '#00e5c8',
-    dimColor: 'rgba(0,229,200,.12)',
-    nodeClass: 'node-a',
-    online: true,
-    lastUpdate: 'vừa xong',
-    battery: null,
-    power: 'Nguồn điện cố định 5V',
-    hw: ['PMS7003','ESP32-WROOM','WiFi 2.4GHz','Hộp IP54 ngoài trời'],
-    history: historyOutdoor,
-    reading: currentReading(historyOutdoor),
+    id:'A', name:'Sân trường ULIS', nodeLabel:'NODE A · Outdoor',
+    addr:'Khuôn viên ngoài trời – Cổng chính ULIS, Cầu Giấy, Hà Nội',
+    icon:'🌳', accent:'#2dd4a0', pale:'#e0faf2', paleBd:'rgba(45,212,160,.25)',
+    hw:'ESP32-WROOM + PMS7003 · IP54', updated:'vừa xong',
+    history:hist_A, reading:makeReading(hist_A),
   },
   {
-    id: 'node-b',
-    name: 'Không gian mở',
-    location: 'Hành lang tầng 1 – Tòa nhà A · Trường ĐH Ngoại ngữ',
-    type: 'semi-outdoor',
-    icon: '🏛',
-    accentColor: '#a78bfa',
-    dimColor: 'rgba(167,139,250,.12)',
-    nodeClass: 'node-b',
-    online: true,
-    lastUpdate: '12 giây trước',
-    battery: null,
-    power: 'USB 5V từ ổ cắm hành lang',
-    hw: ['PMS7003','Arduino Nano + ESP-01','UART Bridge','Vỏ nhựa ABS'],
-    history: historyIndoor,
-    reading: currentReading(historyIndoor),
+    id:'B', name:'Không gian mở', nodeLabel:'NODE B · Semi-outdoor',
+    addr:'Hành lang tầng 1 – Toà nhà A, khu vực bán ngoài trời',
+    icon:'🏛️', accent:'#38bdf8', pale:'#e0f4ff', paleBd:'rgba(56,189,248,.25)',
+    hw:'Arduino Nano + ESP-01 + PMS7003', updated:'18 giây trước',
+    history:hist_B, reading:makeReading(hist_B),
   },
 ];
 
-/* ── 3. NAVIGATION ── */
-function navigate(id) {
-  document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
-  document.querySelectorAll('.nav-link').forEach(l => l.classList.remove('active'));
-  document.getElementById('screen-' + id).classList.add('active');
-  document.querySelector(`[data-screen="${id}"]`).classList.add('active');
+let activeNode = 0;
 
-  // lazy init screens
-  if (id === 'history'  && !window._histInited)  { initHistory(); window._histInited = true; }
-  if (id === 'ai'       && !window._aiInited)     { initAI();      window._aiInited = true; }
-  if (id === 'alerts'   && !window._alertsInited) { initAlerts();  window._alertsInited = true; }
-  if (id === 'about'    && !window._aboutInited)  { initAbout();   window._aboutInited = true; }
-  if (id === 'sensors'  && !window._sensorsInited){ initSensors(); window._sensorsInited = true; }
-}
-function bindNavLinks() {
-  document.querySelectorAll('.nav-link').forEach(link => {
-    link.addEventListener('click', (e) => {
-      e.preventDefault();
-      const screen = link.dataset.screen;
-      if (screen) navigate(screen);
-    });
-  });
-}
-/* ── 4. DASHBOARD ── */
-function initDashboard() {
-  renderHeroCards();
-  updateMetricsRow();
-  renderMiniChart();
-  updateAIInsight();
-}
-
-function renderHeroCards() {
-  const grid = document.getElementById('hero-grid');
-  grid.innerHTML = SENSORS.map(s => {
-    const lv = AQI.level(s.reading.pm25);
-    const aqi = AQI.fromPM25(s.reading.pm25);
-    const barPct = Math.min(100, Math.round(s.reading.pm25 / 150 * 100));
-    const sparkData = s.history.slice(-16);
-    const sparkMax = Math.max(...sparkData, 1);
-
-    return `
-    <div class="sensor-hero ${s.nodeClass}">
-      <div class="sh-top">
-        <div>
-          <div class="sh-node" style="color:${s.accentColor}">${s.icon} ${s.id.toUpperCase()} · ${s.type === 'outdoor' ? 'Ngoài trời' : 'Không gian mở'}</div>
-          <div class="sh-name">${s.name}</div>
-          <div class="sh-loc">${s.location}</div>
-        </div>
-        <div class="sh-status">
-          <div class="sh-status-dot" style="background:${s.online ? '#22c55e' : '#f43f5e'}"></div>
-          <span style="color:${s.online ? '#22c55e' : '#f43f5e'}">${s.online ? 'Online' : 'Offline'}</span>
-        </div>
-      </div>
-
-      <div class="sh-pm25-big">
-        <div class="sh-pm25-val" style="color:${lv.color}">${s.reading.pm25}</div>
-        <div class="sh-pm25-unit">µg/m³ · PM2.5</div>
-        <span class="sh-pm25-label" style="background:${lv.bg};color:${lv.color};border:1px solid ${lv.border}">
-          ${lv.label} · AQI ${aqi}
-        </span>
-      </div>
-
-      <div class="sh-metrics">
-        <div class="sh-metric">
-          <div class="sh-metric-val" style="color:${s.accentColor}">${s.reading.pm1}</div>
-          <div class="sh-metric-lbl">PM1.0</div>
-        </div>
-        <div class="sh-metric">
-          <div class="sh-metric-val" style="color:${lv.color}">${s.reading.pm25}</div>
-          <div class="sh-metric-lbl">PM2.5</div>
-        </div>
-        <div class="sh-metric">
-          <div class="sh-metric-val" style="color:#7a95b0">${s.reading.pm10}</div>
-          <div class="sh-metric-lbl">PM10</div>
-        </div>
-      </div>
-
-      <div class="sh-bar-wrap">
-        <div class="sh-bar-label">
-          <span>PM2.5 so với ngưỡng kém (150 µg/m³)</span>
-          <span style="color:${lv.color}">${barPct}%</span>
-        </div>
-        <div class="sh-bar-track">
-          <div class="sh-bar-fill" style="width:${barPct}%;background:${lv.color}"></div>
-        </div>
-      </div>
-
-      <div class="sh-sparkline">
-        ${sparkData.map(v => {
-          const h = Math.max(6, Math.round(v / sparkMax * 24));
-          return `<div class="spark-b" style="height:${h}px;flex:1;background:${s.accentColor};opacity:.7"></div>`;
-        }).join('')}
-      </div>
-
-      <div style="font-size:10px;color:#3d5a75;font-family:'DM Mono',sans-serif;margin-top:8px">
-        Cập nhật: ${s.lastUpdate} · ${s.power}
-      </div>
-    </div>`;
-  }).join('');
-}
-
-function updateMetricsRow() {
-  const pm25vals = SENSORS.map(s => s.reading.pm25);
-  const avgPM25 = Math.round((pm25vals[0] + pm25vals[1]) / 2 * 10) / 10;
-  const avgAQI = AQI.fromPM25(avgPM25);
-  const lv = AQI.level(avgPM25);
-  const peakPM25 = Math.max(...SENSORS.flatMap(s => s.history));
-
-  const aqiEl = document.getElementById('campus-aqi');
-  aqiEl.textContent = avgAQI;
-  aqiEl.style.color = lv.color;
-  document.getElementById('campus-aqi-label').textContent = lv.label;
-  document.getElementById('peak-pm25').textContent = peakPM25.toFixed(1);
-  document.getElementById('peak-pm25').style.color = AQI.level(peakPM25).color;
-}
-
-let liveChart;
-function renderMiniChart() {
-  const labels = Array.from({length: 24}, (_, i) => {
-    const h = (now.getHours() - 23 + i + 24) % 24;
-    return i % 4 === 0 ? `${h}h` : '';
-  });
-
-  liveChart = new Chart(document.getElementById('liveChart'), {
-    type: 'line',
-    data: {
-      labels,
-      datasets: [
-        {
-          label: 'Sân trường',
-          data: historyOutdoor,
-          borderColor: '#00e5c8',
-          backgroundColor: 'rgba(0,229,200,.06)',
-          fill: true, tension: .4, pointRadius: 0, borderWidth: 2,
-        },
-        {
-          label: 'Không gian mở',
-          data: historyIndoor,
-          borderColor: '#a78bfa',
-          backgroundColor: 'rgba(167,139,250,.06)',
-          fill: true, tension: .4, pointRadius: 0, borderWidth: 2,
-        },
-        {
-          label: 'Ngưỡng (35.4)',
-          data: Array(24).fill(35.4),
-          borderColor: 'rgba(245,158,11,.4)',
-          borderDash: [4, 4], pointRadius: 0, fill: false, borderWidth: 1,
-        },
-      ]
-    },
-    options: {
-      responsive: true, maintainAspectRatio: false,
-      plugins: { legend: { display: false } },
-      scales: {
-        x: { ticks: { color: '#3d5a75', font: { size: 10, family: "'DM Mono'" } }, grid: { color: 'rgba(30,50,72,.8)' } },
-        y: { min: 0, ticks: { color: '#3d5a75', font: { size: 10 } }, grid: { color: 'rgba(30,50,72,.8)' } }
-      }
-    }
-  });
-
-  // Pie chart
-  const countLevels = (hist) => {
-    const counts = {good:0,moderate:0,sensitive:0,unhealthy:0,very:0,hazardous:0};
-    hist.forEach(v => counts[AQI.level(v).key]++);
-    return counts;
+/* ─────────────────────────────────────────
+   4. CONTENT DATA
+───────────────────────────────────────── */
+function getDecision(pm25) {
+  const map = {
+    good:[
+      {em:'🏃',c:'#f0fdf4',bd:'#86efac',tc:'#14532d',title:'Thoải mái ra ngoài! 🎉',body:'Không khí trong lành. Đi học, dạo sân, tập thể dục ngoài trời đều ổn. Tận hưởng ngày đẹp!'},
+      {em:'🚴',c:'#e0faf2',bd:'#6ee7b7',tc:'#065f46',title:'Thời điểm vàng hoạt động ngoài trời',body:'AQI thấp — lý tưởng để đạp xe, chạy bộ hoặc học nhóm ngoài trời. Không cần khẩu trang.'},
+    ],
+    moderate:[
+      {em:'🚶',c:'#fefce8',bd:'#fde68a',tc:'#713f12',title:'Có thể ra ngoài, giữ ý thức',body:'Đi lại ngắn (đến lớp, ăn trưa) không cần lo. Hạn chế tập thể dục mạnh kéo dài ngoài trời.'},
+      {em:'😷',c:'#fff8ed',bd:'#fed7aa',tc:'#7c2d12',title:'Nhóm nhạy cảm nên đeo khẩu trang',body:'Hen suyễn, dị ứng bụi, tim mạch → nên đeo khẩu trang y tế và hạn chế thời gian ở ngoài.'},
+    ],
+    sensitive:[
+      {em:'😷',c:'#fff7ed',bd:'#fed7aa',tc:'#7c2d12',title:'Ra ngoài? BẮT BUỘC đeo khẩu trang!',body:'Đeo N95 hoặc KF94 khi ra ngoài. Hạn chế hoạt động thể chất mạnh. Về trong nhà sớm.'},
+      {em:'🏠',c:'#f0f9ff',bd:'#bae6fd',tc:'#0c4a6e',title:'Tốt hơn nên ở trong nhà',body:'Ưu tiên ở lại thư viện, phòng học có điều hoà. Không khí trong nhà tốt hơn nhiều lúc này.'},
+    ],
+    unhealthy:[
+      {em:'⚠️',c:'#fef2f2',bd:'#fca5a5',tc:'#7f1d1d',title:'Hạn chế tối đa ra ngoài ⚠️',body:'Chỉ ra ngoài khi thực sự cần. Đeo N95, đi nhanh, không đứng lâu ngoài trời. Về nhà sớm.'},
+      {em:'🪟',c:'#fef2f2',bd:'#fecaca',tc:'#7f1d1d',title:'Đóng cửa sổ phòng học',body:'Yêu cầu phòng học bật điều hoà và đóng cửa sổ. Không khí ngoài đang kém hơn trong phòng.'},
+    ],
+    very:[
+      {em:'🚨',c:'#f5f3ff',bd:'#c4b5fd',tc:'#3b0764',title:'KHÔNG nên ra ngoài 🚨',body:'Không khí rất xấu. Ở trong nhà, đóng kín cửa. Đeo N95 ngay cả trong nhà. Liên hệ y tế nếu khó thở.'},
+      {em:'📢',c:'#f5f3ff',bd:'#ddd6fe',tc:'#3b0764',title:'Thông báo cho mọi người xung quanh',body:'Chia sẻ cảnh báo này với bạn cùng phòng và gia đình. Trẻ em và người cao tuổi cần bảo vệ ngay.'},
+    ],
+    hazardous:[
+      {em:'☠️',c:'#fff1f2',bd:'#fecdd3',tc:'#881337',title:'TÌNH TRẠNG KHẨN CẤP ☠️',body:'Không ra ngoài dưới bất kỳ lý do gì. Gọi 115 nếu có triệu chứng hô hấp nghiêm trọng.'},
+      {em:'🏥',c:'#fff1f2',bd:'#fda4af',tc:'#881337',title:'Tìm nơi trú ẩn ngay',body:'Vào tòa nhà kín, bịt khe hở. Bật lọc không khí HEPA nếu có. Theo dõi thông báo khẩn từ trường.'},
+    ],
   };
-  const combined = [...historyOutdoor, ...historyIndoor];
-  const counts = countLevels(combined);
-  const levelConfig = [
-    {key:'good',label:'Tốt',color:'#22c55e'},
-    {key:'moderate',label:'Trung bình',color:'#f59e0b'},
-    {key:'sensitive',label:'Nhóm nhạy cảm',color:'#f97316'},
-    {key:'unhealthy',label:'Kém',color:'#f43f5e'},
-    {key:'very',label:'Rất xấu',color:'#a78bfa'},
-  ];
-  const pieData = levelConfig.filter(l => counts[l.key] > 0);
-
-  new Chart(document.getElementById('pieChart'), {
-    type: 'doughnut',
-    data: {
-      labels: pieData.map(l => l.label),
-      datasets: [{
-        data: pieData.map(l => counts[l.key]),
-        backgroundColor: pieData.map(l => l.color),
-        borderWidth: 2, borderColor: '#0d1520',
-      }]
-    },
-    options: {
-      responsive: true, maintainAspectRatio: false,
-      plugins: { legend: { display: false } },
-      cutout: '65%',
-    }
-  });
-
-  document.getElementById('pie-legend').innerHTML = pieData.map(l =>
-    `<span><i style="background:${l.color}"></i>${l.label} ${counts[l.key]}</span>`
-  ).join('');
+  return map[AQI.level(pm25).k] || map.good;
 }
 
-function updateAIInsight() {
-  const pm25A = SENSORS[0].reading.pm25;
-  const pm25B = SENSORS[1].reading.pm25;
-  const higher = pm25A > pm25B ? 'Sân trường ULIS' : 'Không gian mở';
-  const trend = historyOutdoor.slice(-3).every((v, i, a) => i === 0 || v > a[i-1]) ? 'đang tăng' : 'đang giảm';
-  const insights = [
-    `PM2.5 tại ${higher} cao hơn – xu hướng ${trend}. Dự báo đạt đỉnh trong 2–3 giờ tới nếu gió lặng. Khuyến nghị hạn chế hoạt động ngoài trời vào 7–9h sáng.`,
-    `Chênh lệch PM2.5 giữa hai node: ${Math.abs(pm25A - pm25B).toFixed(1)} µg/m³. Mức độ khuếch tán bụi thấp, thời tiết ít gió. Dự báo chất lượng cải thiện sau 15h.`,
-    `Hệ thống phát hiện pattern: ô nhiễm cao nhất vào 7–8h (giờ cao điểm). AQI trung bình khuôn viên hôm nay: ${AQI.fromPM25((pm25A+pm25B)/2)}.`,
-  ];
-  document.getElementById('ai-insight-text').textContent = insights[Math.floor(Math.random() * insights.length)];
+function getGear(pm25) {
+  const lv = AQI.level(pm25);
+  const allGear = {
+    good:[
+      {em:'👟',name:'Giày thể thao',why:'Ngày hoạt động thoải mái',must:false,c:'#e0faf2',bd:'#6ee7b7'},
+      {em:'🧴',name:'Kem chống nắng',why:'UV cao giữa trưa',must:true,c:'#fffbeb',bd:'#fde68a'},
+      {em:'💧',name:'Bình nước 500ml+',why:'Giữ đủ nước cho cơ thể',must:true,c:'#e0f4ff',bd:'#bae6fd'},
+      {em:'🎒',name:'Balo bình thường',why:'Ngày học thoải mái',must:false,c:'#f0fdf4',bd:'#bbf7d0'},
+    ],
+    moderate:[
+      {em:'😷',name:'Khẩu trang y tế',why:'Nhóm nhạy cảm nên mang',must:false,c:'#fffbeb',bd:'#fde68a'},
+      {em:'💧',name:'Bình nước 500ml+',why:'Giữ ẩm đường hô hấp',must:true,c:'#e0f4ff',bd:'#bae6fd'},
+      {em:'🧴',name:'Kem chống nắng',why:'Bụi + UV gây kích ứng da',must:true,c:'#fffbeb',bd:'#fde68a'},
+      {em:'🍬',name:'Kẹo ho / long đờm',why:'Làm dịu cổ họng khi cần',must:false,c:'#f5f3ff',bd:'#ddd6fe'},
+    ],
+    sensitive:[
+      {em:'😷',name:'Khẩu trang N95/KF94',why:'BẮT BUỘC khi ra ngoài',must:true,c:'#fff7ed',bd:'#fed7aa'},
+      {em:'💧',name:'Nước ấm + mật ong',why:'Bảo vệ cổ họng và phổi',must:true,c:'#fffbeb',bd:'#fde68a'},
+      {em:'💊',name:'Thuốc dị ứng/xịt mũi',why:'Nếu có tiền sử hen suyễn',must:true,c:'#fef2f2',bd:'#fecaca'},
+      {em:'🧣',name:'Khăn che mũi miệng',why:'Lớp bảo vệ bổ sung',must:false,c:'#f5f3ff',bd:'#ddd6fe'},
+    ],
+    unhealthy:[
+      {em:'😷',name:'Khẩu trang N95',why:'BẮT BUỘC khi ra ngoài',must:true,c:'#fef2f2',bd:'#fecaca'},
+      {em:'🥽',name:'Kính bảo hộ / kính thường',why:'Bảo vệ mắt khỏi bụi mịn',must:true,c:'#fef2f2',bd:'#fca5a5'},
+      {em:'💊',name:'Thuốc hô hấp (nếu có)',why:'Mang theo người trong ngày',must:true,c:'#fff7ed',bd:'#fed7aa'},
+      {em:'📱',name:'Điện thoại đầy pin',why:'Liên lạc khẩn cấp nếu cần',must:true,c:'#f5f3ff',bd:'#ddd6fe'},
+    ],
+    very:[
+      {em:'😷',name:'N95 x2 (mang dự phòng)',why:'Thay khi ướt hoặc hỏng',must:true,c:'#f5f3ff',bd:'#c4b5fd'},
+      {em:'🥽',name:'Kính kín mắt',why:'Mắt rất nhạy cảm lúc này',must:true,c:'#fef2f2',bd:'#fca5a5'},
+      {em:'📞',name:'Số 115 trong danh bạ',why:'Cấp cứu quốc gia',must:true,c:'#fef2f2',bd:'#fecaca'},
+      {em:'🏠',name:'TỐT NHẤT: Ở NHÀ',why:'Không ra ngoài nếu không cần',must:true,c:'#f5f3ff',bd:'#ddd6fe'},
+    ],
+    hazardous:[
+      {em:'🚨',name:'ĐỪNG RA NGOÀI',why:'Mức nguy hiểm – ở trong nhà',must:true,c:'#fff1f2',bd:'#fda4af'},
+      {em:'😷',name:'N95 + bịt kín mặt',why:'Nếu BẮT BUỘC phải ra ngoài',must:true,c:'#fff1f2',bd:'#fecdd3'},
+      {em:'📞',name:'Gọi 115 ngay',why:'Nếu khó thở hoặc đau ngực',must:true,c:'#fef2f2',bd:'#fca5a5'},
+      {em:'💊',name:'Thuốc dự phòng đầy đủ',why:'Chuẩn bị trước khi cần',must:true,c:'#fffbeb',bd:'#fde68a'},
+    ],
+  };
+  return allGear[lv.k] || allGear.good;
 }
 
-/* ── 5. SENSOR DETAIL SCREEN ── */
-function initSensors() {
-  const grid = document.getElementById('sensor-detail-grid');
-  grid.innerHTML = SENSORS.map((s, idx) => {
-    const lv = AQI.level(s.reading.pm25);
-    const tips = AQI.tips(lv.key);
+const TIPS_HOME = [
+  {em:'🌬️',title:'Thời điểm thông gió',body:'Mở cửa sổ lúc 5–7h sáng và sau 20h tối khi PM2.5 thấp nhất. Tránh thông gió lúc 7–9h cao điểm.',c:'#e0faf2',bd:'#6ee7b7'},
+  {em:'🤧',title:'Rửa mũi muối sinh lý',body:'Sau khi ở ngoài về, rửa mũi NaCl 0.9%. Loại bỏ bụi mịn bám trong khoang mũi hiệu quả.',c:'#fffbeb',bd:'#fde68a'},
+  {em:'🪴',title:'Cây xanh trong phòng',body:'Kim Tiền, Trầu bà, Lưỡi Hổ – lọc VOC và tăng độ ẩm tự nhiên trong phòng ký túc.',c:'#f0fdf4',bd:'#86efac'},
+  {em:'🍵',title:'Trà gừng mật ong',body:'Buổi sáng uống trà gừng + mật ong + chanh. Giảm viêm và tăng sức đề kháng đường hô hấp.',c:'#f5f3ff',bd:'#ddd6fe'},
+  {em:'👁️',title:'Bảo vệ mắt',body:'Đeo kính thường hoặc kính râm khi ra ngoài. Bụi PM2.5 gây kích ứng và viêm kết mạc mắt.',c:'#e0f4ff',bd:'#bae6fd'},
+  {em:'🏃',title:'Tập trong giờ sạch',body:'Tập thể dục ngoài trời vào sáng sớm (trước 7h) hoặc sau 19h khi PM2.5 thấp nhất.',c:'#f0fdf4',bd:'#bbf7d0'},
+  {em:'😴',title:'Ngủ đủ giấc',body:'Trong lúc ngủ phổi tự dọn bụi hiệu quả nhất. 7–8 tiếng ngủ = phổi khoẻ hơn.',c:'#fff7ed',bd:'#fed7aa'},
+  {em:'💧',title:'Uống 2L nước/ngày',body:'Màng nhầy đường hô hấp cần đủ nước để hoạt động. Thêm nước ấm pha mật ong sáng sớm.',c:'#e0f4ff',bd:'#7dd3fc'},
+];
 
-    return `
-    <div class="sensor-full-card">
-      <div class="sfc-header">
-        <div class="sfc-icon" style="background:${s.dimColor};font-size:22px">${s.icon}</div>
+/* ─────────────────────────────────────────
+   5. RENDER FUNCTIONS
+───────────────────────────────────────── */
+function renderHero() {
+  const s = NODES[activeNode];
+  const lv = AQI.level(s.reading.pm25);
+  const aqi = AQI.fromPM25(s.reading.pm25);
+  document.getElementById('heroWrap').innerHTML = `
+  <div class="hero" style="background:${lv.bg};border-color:${lv.bd}">
+    <div class="hero-glow" style="background:${lv.c}"></div>
+    <div class="hero-top-row">
+      <div class="hero-location-tag">
+        <div class="hero-node-label" style="color:${lv.tc}">${s.nodeLabel}</div>
+        <div class="hero-node-name" style="color:${lv.tc}">${s.name}</div>
+        <div class="hero-node-addr" style="color:${lv.tc}">${s.addr}</div>
+      </div>
+      <div class="hero-emoji-big">${lv.em}</div>
+    </div>
+    <div class="hero-pm25-val" style="color:${lv.c}">${s.reading.pm25}</div>
+    <div class="hero-pm25-sub" style="color:${lv.tc}">µg/m³ · PM2.5</div>
+    <div class="hero-level-chip" style="background:${lv.c}20;border-color:${lv.bd};color:${lv.tc}">
+      ${lv.em} ${lv.lbl}
+    </div>
+    <div class="hero-aqi-row" style="color:${lv.tc}">AQI: ${aqi} · ${AI.trend(s.history).dir}</div>
+    <div class="hero-metrics-row">
+      ${[['PM1.0',s.reading.pm1],['PM2.5',s.reading.pm25],['PM10',s.reading.pm10],['Nhiệt độ',s.reading.temp+'°C']].map(([l,v])=>`
+      <div class="h-metric">
+        <div class="h-metric-val" style="color:${lv.c}">${v}</div>
+        <div class="h-metric-lbl" style="color:${lv.tc}">${l}</div>
+      </div>`).join('')}
+    </div>
+    <div class="hero-footer" style="color:${lv.tc}">
+      <span class="hero-pulse-dot" style="background:${lv.c}"></span>
+      <span>📡 ${s.hw} · ⏱️ ${s.updated}</span>
+    </div>
+  </div>`;
+}
+
+function renderDecision() {
+  const rows = getDecision(NODES[activeNode].reading.pm25);
+  document.getElementById('decisionWrap').innerHTML = `
+  <div class="card" style="padding:16px">
+    <div class="card-title">🤔 Với PM2.5 = <span style="color:${AQI.level(NODES[activeNode].reading.pm25).c};font-weight:900">${NODES[activeNode].reading.pm25}</span> µg/m³ tại ${NODES[activeNode].name}:</div>
+    ${rows.map(r=>`
+    <div class="decision-row" style="background:${r.c};border-color:${r.bd}">
+      <div class="d-emoji">${r.em}</div>
+      <div>
+        <div class="d-title" style="color:${r.tc}">${r.title}</div>
+        <div class="d-body">${r.body}</div>
+      </div>
+    </div>`).join('')}
+  </div>`;
+}
+
+function renderGear() {
+  const gear = getGear(NODES[activeNode].reading.pm25);
+  const lv = AQI.level(NODES[activeNode].reading.pm25);
+  document.getElementById('gearWrap').innerHTML = `
+  <div class="card">
+    <div class="card-title">${lv.em} Danh sách đồ cần mang – mức <span style="color:${lv.c}">${lv.lbl}</span></div>
+    <div class="gear-grid">
+      ${gear.map(g=>`
+      <div class="gear-item" style="background:${g.c};border-color:${g.bd}">
+        <div class="g-emoji">${g.em}</div>
         <div>
-          <div class="sfc-title" style="color:${s.accentColor}">${s.name}</div>
-          <div class="sfc-sub">${s.location}</div>
+          <div class="g-name">${g.name}</div>
+          <div class="g-why">${g.why}</div>
+          ${g.must?`<span class="g-must-tag" style="background:${g.bd};color:#7f1d1d">BẮT BUỘC</span>`:''}
         </div>
-        <div class="sfc-badge" style="background:${lv.bg};color:${lv.color};border:1px solid ${lv.border}">
-          ${lv.label} · AQI ${AQI.fromPM25(s.reading.pm25)}
+      </div>`).join('')}
+    </div>
+  </div>`;
+}
+
+function renderTipsHome() {
+  document.getElementById('tipsHomeScroll').innerHTML = TIPS_HOME.map(t=>`
+  <div class="tip-card" style="background:${t.c};border-color:${t.bd}">
+    <span class="tip-emoji">${t.em}</span>
+    <div class="tip-title">${t.title}</div>
+    <div class="tip-body">${t.body}</div>
+  </div>`).join('');
+}
+
+function renderThresh() {
+  const rows=[
+    {sw:'#16a34a',lbl:'😊 Tốt',range:'0–12 µg/m³',tip:'Thoải mái hoạt động ngoài trời'},
+    {sw:'#ca8a04',lbl:'🙂 Trung bình',range:'12–35 µg/m³',tip:'Nhóm nhạy cảm hạn chế ở ngoài lâu'},
+    {sw:'#ea580c',lbl:'😐 Nhóm nhạy cảm',range:'35–55 µg/m³',tip:'Đeo khẩu trang, giảm hoạt động mạnh'},
+    {sw:'#dc2626',lbl:'😷 Kém',range:'55–150 µg/m³',tip:'Hạn chế ra ngoài, đóng cửa sổ'},
+    {sw:'#7c3aed',lbl:'🤢 Rất xấu',range:'150–250 µg/m³',tip:'Ở trong nhà, đeo N95 mọi lúc'},
+    {sw:'#be123c',lbl:'☠️ Nguy hiểm',range:'>250 µg/m³',tip:'Khẩn cấp – gọi 115 nếu cần'},
+  ];
+  document.getElementById('threshWrap').innerHTML = `
+    <div style="font-size:11px;font-weight:800;margin-bottom:10px;color:#374151">Tiêu chuẩn US EPA · PM2.5 (µg/m³)</div>
+    ${rows.map(r=>`
+    <div class="thresh-row">
+      <div class="thresh-swatch" style="background:${r.sw}"></div>
+      <div class="thresh-level">${r.lbl}</div>
+      <div class="thresh-range">${r.range}</div>
+      <div class="thresh-tip">${r.tip}</div>
+    </div>`).join('')}
+    <div style="font-size:9px;color:#9ca3af;margin-top:10px;font-weight:600;padding-top:8px;border-top:1px solid #f3f4f6">
+      ℹ️ PM1.0/PM2.5/PM10 là dữ liệu đo trực tiếp từ PMS7003 · AQI suy luận theo US EPA · Không đo CO, NO₂, SO₂
+    </div>`;
+}
+
+/* ─────────────────────────────────────────
+   6. SENSORS SCREEN
+───────────────────────────────────────── */
+function renderSensorCards() {
+  document.getElementById('sensorCardsWrap').innerHTML = NODES.map(s=>{
+    const lv=AQI.level(s.reading.pm25);
+    const aqi=AQI.fromPM25(s.reading.pm25);
+    const ins=AI.insight(s);
+    return `
+    <div class="sensor-card">
+      <div class="sc-head">
+        <div class="sc-icon-box" style="background:${s.pale};border:1.5px solid ${s.paleBd}">${s.icon}</div>
+        <div>
+          <div class="sc-title">${s.name}</div>
+          <div class="sc-sub">${s.addr}</div>
         </div>
+        <div class="sc-badge" style="background:${lv.bg};border-color:${lv.bd};color:${lv.tc}">${lv.em} ${lv.lbl}</div>
       </div>
-
-      <div class="pm-grid">
-        ${[
-          ['PM1.0','Hạt siêu mịn ≤1µm\nXuyên vào máu',s.reading.pm1,50],
-          ['PM2.5','Bụi mịn ≤2.5µm\nChỉ số vàng WHO',s.reading.pm25,150],
-          ['PM10','Bụi thô ≤10µm\nKích ứng hô hấp trên',s.reading.pm10,200],
-        ].map(([name, desc, val, max]) => {
-          const l = AQI.level(name === 'PM2.5' ? val : val * (name === 'PM1.0' ? 1.5 : 0.6));
-          return `
-          <div class="pm-box">
-            <div class="pm-box-name">${name}</div>
-            <div class="pm-box-val" style="color:${l.color}">${val}</div>
-            <div class="pm-box-unit">µg/m³</div>
-            <div class="pm-explain" style="font-size:10px;margin-top:6px">${desc}</div>
-            <div class="pm-box-bar">
-              <div class="pm-box-bar-fill" style="width:${Math.min(100,Math.round(val/max*100))}%;background:${l.color}"></div>
-            </div>
-          </div>`;
-        }).join('')}
+      <div class="pm-row3">
+        ${[['PM1.0',s.reading.pm1],['PM2.5',s.reading.pm25],['PM10',s.reading.pm10]].map(([n,v])=>`
+        <div class="pm-box">
+          <div class="pm-box-label">${n}</div>
+          <div class="pm-box-val" style="color:${lv.c}">${v}</div>
+          <div class="pm-box-unit">µg/m³</div>
+        </div>`).join('')}
       </div>
-
-      <div class="particle-counts">
-        <div class="pc-label">Số lượng hạt (particles/0.1L)</div>
-        <div class="pc-grid">
-          ${[
-            ['≥0.3µm', s.reading.particles_03],
-            ['≥0.5µm', s.reading.particles_05],
-            ['≥1µm',   s.reading.particles_1],
-            ['≥2.5µm', s.reading.particles_25],
-          ].map(([size, cnt]) =>
-            `<div class="pc-chip"><span>${size}:</span>${cnt.toLocaleString()}</div>`
-          ).join('')}
-        </div>
+      ${[['PM2.5',s.reading.pm25,150],['PM10',s.reading.pm10,200]].map(([n,v,mx])=>`
+      <div class="pm-bar-row">
+        <div class="pm-bar-lbl">${n}</div>
+        <div class="pm-bar-track"><div class="pm-bar-fill" style="width:${Math.min(100,Math.round(v/mx*100))}%;background:${lv.c}"></div></div>
+        <div class="pm-bar-pct">${Math.min(100,Math.round(v/mx*100))}%</div>
+      </div>`).join('')}
+      <div class="extra-chips">
+        <div class="extra-chip">🌡️ ${s.reading.temp}°C</div>
+        <div class="extra-chip">💧 ${s.reading.humidity}%</div>
+        <div class="extra-chip">📊 AQI ${aqi}</div>
+        <div class="extra-chip">⏱️ ${s.updated}</div>
+        <div class="extra-chip">📡 ${s.hw}</div>
       </div>
-
-      <div class="sfc-mini-chart">
-        <div class="sfc-mini-label">PM2.5 – 24h gần nhất</div>
-        <div style="position:relative;height:100px">
-          <canvas id="sfc-chart-${idx}" role="img" aria-label="PM2.5 24h của ${s.name}">PM2.5 lịch sử.</canvas>
-        </div>
-      </div>
-
-      <div class="hw-info">
-        <div style="font-size:10px;color:#3d5a75;font-family:'DM Mono',sans-serif;width:100%;margin-bottom:4px">PHẦN CỨNG</div>
-        ${s.hw.map(h => `<span class="hw-chip"><strong>${h}</strong></span>`).join('')}
-        <span class="hw-chip">Nhiệt độ: <strong>${s.reading.temp}°C</strong></span>
-        <span class="hw-chip">Độ ẩm: <strong>${s.reading.humidity}%</strong></span>
-        <span class="hw-chip">Nguồn: <strong>${s.power}</strong></span>
-      </div>
-
-      <div style="margin-top:12px;padding:12px;background:rgba(0,229,200,.05);border-radius:8px;border:1px solid rgba(0,229,200,.1)">
-        <div style="font-size:10px;color:#00e5c8;font-family:'DM Mono';margin-bottom:6px">KHUYẾN NGHỊ SỨC KHỎE</div>
-        ${tips.map(t => `<div style="font-size:12px;color:#7a95b0;margin-bottom:3px">· ${t}</div>`).join('')}
+      <div style="margin-top:12px;padding:10px 12px;background:#f0fdf4;border-radius:10px;border:1.5px solid #bbf7d0">
+        <div style="font-size:9px;font-weight:800;color:#15803d;letter-spacing:.06em;margin-bottom:4px">🤖 AI INSIGHT</div>
+        <div style="font-size:11px;font-weight:600;color:#166534;line-height:1.6">${ins}</div>
       </div>
     </div>`;
   }).join('');
-
-  // Render mini charts after DOM
-  setTimeout(() => {
-    SENSORS.forEach((s, idx) => {
-      const labels = Array.from({length: 24}, (_, i) => i % 6 === 0 ? `${i}h` : '');
-      new Chart(document.getElementById(`sfc-chart-${idx}`), {
-        type: 'line',
-        data: {
-          labels,
-          datasets: [{
-            data: s.history,
-            borderColor: s.accentColor,
-            backgroundColor: s.dimColor,
-            fill: true, tension: .4, pointRadius: 0, borderWidth: 2,
-          }]
-        },
-        options: {
-          responsive: true, maintainAspectRatio: false,
-          plugins: { legend: { display: false } },
-          scales: {
-            x: { ticks: { color: '#3d5a75', font: { size: 9 } }, grid: { color: 'rgba(30,50,72,.6)' } },
-            y: { min: 0, ticks: { color: '#3d5a75', font: { size: 9 } }, grid: { color: 'rgba(30,50,72,.6)' } }
-          }
-        }
-      });
-    });
-  }, 50);
 }
 
-/* ── 6. HISTORY ── */
-let hist1Chart, hist2Chart, currentMode = '24h';
-
-function initHistory() {
-  renderHistCharts('24h');
-  renderHistStats('24h');
+let cmpChartInst;
+function renderCmpChart() {
+  const hrs=Array.from({length:24},(_,i)=>i%4===0?`${i}h`:'');
+  if(cmpChartInst) cmpChartInst.destroy();
+  cmpChartInst=new Chart(document.getElementById('cmpChart'),{
+    type:'line',
+    data:{labels:hrs,datasets:[
+      {data:hist_A,borderColor:'#2dd4a0',backgroundColor:'rgba(45,212,160,.07)',fill:true,tension:.4,pointRadius:0,borderWidth:2,label:'Sân trường'},
+      {data:hist_B,borderColor:'#38bdf8',backgroundColor:'rgba(56,189,248,.06)',fill:true,tension:.4,pointRadius:0,borderWidth:2,label:'Không gian mở'},
+      {data:Array(24).fill(35.4),borderColor:'rgba(234,88,12,.3)',borderDash:[4,3],pointRadius:0,fill:false,borderWidth:1,label:'Ngưỡng'},
+    ]},
+    options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},
+      scales:{x:{ticks:{font:{size:9},color:'#9ca3af'},grid:{color:'rgba(0,0,0,.04)'}},
+              y:{min:0,ticks:{font:{size:9},color:'#9ca3af'},grid:{color:'rgba(0,0,0,.04)'}}}}
+  });
 }
 
-function renderHistCharts(mode) {
-  currentMode = mode;
-  let labels, d1, d2;
+function renderHwGuide() {
+  document.getElementById('hwGuideWrap').innerHTML = `
+  <div style="font-size:12px;font-weight:900;color:#1f2937;margin-bottom:12px">📡 Kết nối PMS7003 → ESP32 → Web</div>
+  <div style="display:flex;flex-direction:column;gap:8px">
+    ${[
+      {step:'1',em:'🔌',title:'Đấu nối phần cứng',body:'PMS7003: VCC→5V · GND→GND · TXD→ESP32 GPIO16 · RXD→GPIO17 (UART2)\nLogic 3.3V TTL, baud 9600, active mode mặc định'},
+      {step:'2',em:'💻',title:'Flash ESP32 (Arduino IDE)',body:'Đọc frame PMS7003 qua Serial2\nParse 32 bytes: pm1=[4][5], pm25=[6][7], pm10=[8][9]\nGửi HTTP POST mỗi 10s hoặc publish MQTT topic'},
+      {step:'3',em:'🌐',title:'Server nhận data',body:'Node.js + Express: POST /api/sensor → lưu vào memory/DB\nHoặc Firebase Realtime DB: ESP32 gọi REST API Firebase trực tiếp\nWebSocket broadcast đến tất cả clients đang mở app'},
+      {step:'4',em:'📱',title:'App nhận real-time',body:'Replace setInterval mock bằng:\nconst ws = new WebSocket("ws://your-server/ws")\nws.onmessage = e => { updateUI(JSON.parse(e.data)) }'},
+    ].map(s=>`
+    <div style="display:flex;gap:10px;padding:12px;background:#f9fafb;border-radius:12px;border:1.5px solid #e5e7eb">
+      <div style="width:28px;height:28px;border-radius:50%;background:#2dd4a0;color:white;font-size:11px;font-weight:900;display:flex;align-items:center;justify-content:center;flex-shrink:0">${s.step}</div>
+      <div>
+        <div style="font-size:12px;font-weight:800;margin-bottom:3px;color:#1f2937">${s.em} ${s.title}</div>
+        <div style="font-size:10px;font-weight:600;color:#6b7280;line-height:1.7;white-space:pre-line">${s.body}</div>
+      </div>
+    </div>`).join('')}
+  </div>
+  <div style="margin-top:12px;padding:10px 12px;background:#e0faf2;border-radius:10px;border:1.5px solid #6ee7b7;font-size:10px;font-weight:600;color:#065f46">
+    💡 <strong>Deploy miễn phí:</strong> Vercel (frontend) + Railway/Render (Node.js backend) + Firebase (real-time DB). 
+    Tổng chi phí: ~0 VNĐ/tháng cho scale nhỏ (dưới 50 users).
+  </div>`;
+}
 
-  if (mode === '24h') {
-    labels = Array.from({length: 24}, (_, i) => `${i}h`);
-    d1 = historyOutdoor; d2 = historyIndoor;
-  } else if (mode === '7d') {
-    const days = ['T2','T3','T4','T5','T6','T7','CN'];
-    labels = days;
-    d1 = days.map(() => Math.round(20 + Math.random() * 60));
-    d2 = days.map(() => Math.round(15 + Math.random() * 40));
-  } else {
-    labels = Array.from({length: 30}, (_, i) => `${i+1}`);
-    d1 = labels.map(() => Math.round(18 + Math.random() * 70));
-    d2 = labels.map(() => Math.round(12 + Math.random() * 50));
+/* ─────────────────────────────────────────
+   7. REPORT SCREEN
+───────────────────────────────────────── */
+let fcChartInst;
+function renderReport() {
+  const s0=NODES[0]; const s1=NODES[1];
+  const avg0=+(s0.history.reduce((a,b)=>a+b,0)/s0.history.length).toFixed(1);
+  const avg1=+(s1.history.reduce((a,b)=>a+b,0)/s1.history.length).toFixed(1);
+  const peak0=Math.max(...s0.history).toFixed(1);
+  const overLimit=s0.history.filter(v=>v>55.4).length+s1.history.filter(v=>v>55.4).length;
+  const lv0=AQI.level(avg0); const lv1=AQI.level(avg1);
+
+  document.getElementById('statsWrap').innerHTML=`
+    <div class="stat-box"><div class="stat-val" style="color:${lv0.c}">${avg0}</div><div class="stat-lbl">TB PM2.5 · Sân trường</div><div class="stat-sub">${lv0.em} ${lv0.lbl}</div></div>
+    <div class="stat-box"><div class="stat-val" style="color:${lv1.c}">${avg1}</div><div class="stat-lbl">TB PM2.5 · KG mở</div><div class="stat-sub">${lv1.em} ${lv1.lbl}</div></div>
+    <div class="stat-box"><div class="stat-val" style="color:#dc2626">${peak0}</div><div class="stat-lbl">Đỉnh PM2.5 hôm nay</div><div class="stat-sub">µg/m³ cao nhất</div></div>
+    <div class="stat-box"><div class="stat-val" style="color:#ea580c">${overLimit}</div><div class="stat-lbl">Lần vượt ngưỡng Kém</div><div class="stat-sub">trong 24h qua</div></div>`;
+
+  document.getElementById('timelineWrap').innerHTML=[
+    {t:'02–05h',em:'✨',txt:'Không khí sạch nhất trong ngày – PM2.5 ≈ 8 µg/m³. Lý tưởng cho sáng sớm.',bg:'#f0fdf4',bd:'#bbf7d0',badge:'TỐT',bbg:'#dcfce7',btc:'#14532d'},
+    {t:'07–09h',em:'⚠️',txt:`Giờ cao điểm giao thông – PM2.5 tăng lên ~${Math.round(parseFloat(peak0)*.85)} µg/m³. Sinh viên đến trường nên đeo khẩu trang.`,bg:'#fff7ed',bd:'#fed7aa',badge:'CHÚ Ý',bbg:'#ffedd5',btc:'#7c2d12'},
+    {t:'10–15h',em:'😊',txt:'Gió giúp phát tán bụi – không khí cải thiện. Có thể ra sân trong giờ nghỉ.',bg:'#f0fdf4',bd:'#86efac',badge:'ỔN ĐỊNH',bbg:'#dcfce7',btc:'#14532d'},
+    {t:'17–19h',em:'🚦',txt:`Tan học + giao thông cao điểm – PM2.5 tăng nhẹ ~${Math.round(parseFloat(peak0)*.6)} µg/m³. Về nhà sớm nếu nhạy cảm.`,bg:'#fefce8',bd:'#fde68a',badge:'THEO DÕI',bbg:'#fef9c3',btc:'#713f12'},
+    {t:'20h+',em:'🌙',txt:'Không khí cải thiện sau giờ cao điểm. PM2.5 giảm đều. Thích hợp thông gió phòng ngủ.',bg:'#e0f4ff',bd:'#bae6fd',badge:'CẢI THIỆN',bbg:'#dbeafe',btc:'#1e3a8a'},
+  ].map(r=>`
+    <div class="tl-item" style="background:${r.bg};border-color:${r.bd}">
+      <div class="tl-time">${r.t}</div>
+      <div class="tl-icon">${r.em}</div>
+      <div class="tl-text">${r.txt}</div>
+      <div class="tl-badge" style="background:${r.bbg};color:${r.btc}">${r.badge}</div>
+    </div>`).join('');
+
+  document.getElementById('noticesWrap').innerHTML=[
+    {em:'🏫',title:'Thông báo từ ULIS Air Shield',body:`Hôm nay PM2.5 trung bình khuôn viên: ${avg0} µg/m³ (Sân trường) · ${avg1} µg/m³ (Không gian mở). ${parseFloat(avg0)>35?'Khuyến nghị hạn chế hoạt động thể chất ngoài trời vào giờ cao điểm.':'Chất lượng không khí ở mức chấp nhận được trong hầu hết thời gian hôm nay.'}`,c:'#e0faf2',bd:'#6ee7b7'},
+    {em:'🎓',title:'Lời khuyên cho sinh viên',body:`Hãy kiểm tra Air Shield trước khi ra ngoài. Thời điểm an toàn nhất hôm nay: ${parseFloat(avg0)<35?'buổi sáng sớm và chiều muộn sau 19h':'sau 20h tối khi PM2.5 giảm về mức thấp hơn'}. Chia sẻ app với bạn bè trong lớp nhé! 💚`,c:'#e0f4ff',bd:'#bae6fd'},
+  ].map(n=>`
+    <div class="notice" style="background:${n.c};border-color:${n.bd}">
+      <div class="notice-emoji">${n.em}</div>
+      <div><div class="notice-title">${n.title}</div><div class="notice-body">${n.body}</div></div>
+    </div>`).join('');
+
+  // Forecast chart
+  const hist6=NODES[0].history.slice(-6);
+  const fc=AI.forecast(NODES[0].history);
+  const allL=[...Array.from({length:6},(_,i)=>`-${5-i}h`),...Array.from({length:6},(_,i)=>`+${i+1}h`)];
+  if(fcChartInst) fcChartInst.destroy();
+  fcChartInst=new Chart(document.getElementById('fcChart'),{
+    type:'line',
+    data:{labels:allL,datasets:[
+      {data:[...hist6,...Array(6).fill(null)],borderColor:'#2dd4a0',backgroundColor:'rgba(45,212,160,.07)',fill:true,tension:.4,pointRadius:0,borderWidth:2,label:'Lịch sử'},
+      {data:[...Array(5).fill(null),hist6[5],...fc],borderColor:'#fbbf24',backgroundColor:'transparent',borderDash:[5,3],tension:.4,pointRadius:3,pointBackgroundColor:'#fbbf24',borderWidth:2,label:'Dự báo AI'},
+    ]},
+    options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},
+      scales:{x:{ticks:{font:{size:9},color:'#9ca3af'},grid:{color:'rgba(0,0,0,.04)'}},
+              y:{min:0,ticks:{font:{size:9},color:'#9ca3af'},grid:{color:'rgba(0,0,0,.04)'}}}}
+  });
+}
+
+/* ─────────────────────────────────────────
+   8. FULL TIPS SCREEN
+───────────────────────────────────────── */
+const TIPS_FULL=[
+  {header:'🏃 Hoạt động & Ra ngoài',c:'#e0faf2',bd:'#6ee7b7',tc:'#065f46',items:[
+    {em:'⏰',t:'Chọn giờ đi học hợp lý',b:'Đến trường trước 7h hoặc sau 9h để tránh giờ cao điểm giao thông. PM2.5 có thể cao gấp đôi trong khung 7–9h sáng.'},
+    {em:'🚶',t:'Đi bộ nhanh thay chạy bộ',b:'Khi PM2.5 > 35, thở chậm hơn = hít ít bụi hơn. Đi bộ nhanh thay vì chạy bộ để bảo vệ phổi.'},
+    {em:'🏊',t:'Ưu tiên hoạt động trong nhà',b:'Khi PM2.5 > 55, chuyển sang bơi lội (hồ bơi mái che), tập gym trong nhà, yoga, hoặc aerobic trong phòng.'},
+    {em:'🌅',t:'Khung giờ vàng cho thể dục',b:'5–7h sáng và 19–21h tối là lúc PM2.5 thấp nhất. Lý tưởng cho chạy bộ, đạp xe, hoặc thư giãn sân trường.'},
+  ]},
+  {header:'😷 Khẩu trang & Bảo hộ',c:'#fff7ed',bd:'#fed7aa',tc:'#7c2d12',items:[
+    {em:'🔬',t:'Chọn đúng loại khẩu trang',b:'PM2.5 > 12: Không cần\nPM2.5 > 35: Khẩu trang y tế 3 lớp\nPM2.5 > 55: N95 hoặc KF94 Hàn Quốc\nPM2.5 > 150: N95 + kính bảo hộ'},
+    {em:'✅',t:'Đeo khẩu trang đúng cách',b:'Bóp sống mũi kim loại sát mặt · Kéo cạnh dưới xuống cằm · Không hở hai bên má. Đeo sai = không bảo vệ được!'},
+    {em:'🔄',t:'Thay khẩu trang đúng lịch',b:'Y tế: dùng 4–8 giờ. N95: tối đa 5 lần nếu không bị ướt. Thấy khó thở hơn bình thường = đến lúc thay rồi!'},
+    {em:'🚫',t:'Khẩu trang vải KHÔNG đủ',b:'Khẩu trang vải chỉ lọc được 30–50% hạt lớn. Với PM2.5, cần lớp lọc meltblown (N95/KF94) mới hiệu quả.'},
+  ]},
+  {header:'🏠 Bảo vệ không gian sống',c:'#e0f4ff',bd:'#bae6fd',tc:'#0c4a6e',items:[
+    {em:'🌿',t:'Top 5 cây lọc không khí trong phòng',b:'1. Kim Tiền (Epipremnum)\n2. Trầu bà (Pothos)\n3. Lưỡi hổ (Snake Plant)\n4. Lan Ý (Peace Lily)\n5. Dương xỉ Boston'},
+    {em:'🪟',t:'Chiến lược thông gió thông minh',b:'PM2.5 < 25: mở thoải mái\nPM2.5 25–55: mở 15–30 phút rồi đóng\nPM2.5 > 55: đóng toàn bộ, bật điều hoà\nKiểm tra Air Shield trước khi mở cửa!'},
+    {em:'🧹',t:'Dọn phòng giảm bụi nội thất',b:'Dùng khăn ẩm thay chổi quét · Hút bụi thảm/rèm mỗi tuần · Giặt ga gối mỗi 2 tuần. Giảm 40% bụi tích tụ.'},
+    {em:'💨',t:'Máy lọc không khí mini phòng KTX',b:'Máy lọc HEPA H13 bắt 99.97% hạt ≥ 0.3µm. Phòng 20–30m²: Xiaomi Mi Air Purifier, Levoit Core. Giá tầm 1–2 triệu.'},
+  ]},
+  {header:'🍎 Dinh dưỡng & Phục hồi',c:'#f5f3ff',bd:'#ddd6fe',tc:'#3b0764',items:[
+    {em:'🥝',t:'Thực phẩm tăng sức đề kháng phổi',b:'Vitamin C: cam, ổi, ớt chuông\nVitamin E: hạt hướng dương, dầu ô liu\nOmega-3: cá hồi, hạt óc chó\nChống oxy hoá: trà xanh, nghệ, việt quất'},
+    {em:'💧',t:'Uống đủ nước – không phải tuỳ hứng',b:'2–2.5 lít nước/ngày giúp màng nhầy đường hô hấp bẫy bụi hiệu quả hơn. Thêm mật ong + gừng + chanh vào nước ấm buổi sáng.'},
+    {em:'🍵',t:'Thảo mộc bảo vệ đường hô hấp',b:'Trà gừng mật ong: giảm viêm, làm dịu cổ họng\nNước muối pha loãng: súc miệng sát khuẩn\nRửa mũi muối sinh lý: loại bụi mịn trong mũi'},
+    {em:'😴',t:'Ngủ đủ giấc để phổi tự phục hồi',b:'Trong lúc ngủ phổi "tự dọn dẹp" bụi mịn hiệu quả nhất. Ngủ 7–8 tiếng · Tắt quạt hướng thẳng mặt · Dùng gối cao nhẹ.'},
+  ]},
+];
+
+function renderFullTips() {
+  document.getElementById('fullTipsWrap').innerHTML=TIPS_FULL.map(sec=>`
+  <div class="tips-section">
+    <div class="tips-section-header">${sec.header}</div>
+    ${sec.items.map(it=>`
+    <div class="tips-full-item" style="background:${sec.c};border-color:${sec.bd}">
+      <div class="tfi-emoji">${it.em}</div>
+      <div>
+        <div class="tfi-title" style="color:${sec.tc}">${it.t}</div>
+        <div class="tfi-body">${it.b}</div>
+      </div>
+    </div>`).join('')}
+  </div>`).join('');
+}
+
+/* ─────────────────────────────────────────
+   9. ABOUT SCREEN
+───────────────────────────────────────── */
+function renderAbout() {
+  document.getElementById('aboutGridWrap').innerHTML=[
+    {ic:'📡',t:'Cảm biến PMS7003',b:'Đo PM1.0, PM2.5, PM10 và số lượng hạt bụi theo kích thước. UART 9600bps, nguồn 5V, logic 3.3V TTL.'},
+    {ic:'🧠',t:'AI Rule Engine',b:'Phân tích xu hướng, phát hiện vượt ngưỡng, dự báo PM2.5 bằng exponential smoothing.'},
+    {ic:'📱',t:'PWA – Cài như app thật',b:'Mở Chrome → Add to Home Screen. Không cần App Store. Offline cache. Push notification.'},
+    {ic:'🌱',t:'Mục tiêu cộng đồng',b:'Bảo vệ sức khỏe sinh viên ULIS. Mỗi node < 500k VNĐ, triển khai được mọi tòa nhà.'},
+  ].map(c=>`
+    <div class="about-card">
+      <span class="about-card-icon">${c.ic}</span>
+      <div class="about-card-title">${c.t}</div>
+      <div class="about-card-body">${c.b}</div>
+    </div>`).join('');
+
+  document.getElementById('archWrap').innerHTML=[
+    {em:'📡',t:'Lớp 1 – Thu thập IoT',c:'#e0faf2',bd:'#6ee7b7',dc:'#2dd4a0',tc:'#065f46',items:['PMS7003 × 2 node (Sân trường + KG mở)','ESP32 WiFi 2.4GHz · UART 9600bps','Active mode streaming mỗi 10 giây','HTTP POST hoặc MQTT publish','Biến môi trường vô hình thành data']},
+    {em:'🧠',t:'Lớp 2 – AI & Phân tích',c:'#e0f4ff',bd:'#bae6fd',dc:'#38bdf8',tc:'#0c4a6e',items:['AQI scoring theo US EPA','Rule Engine 6 mức cảnh báo','Trend detection (tăng/giảm/ổn định)','Exponential smoothing forecast 6h','Auto-alert khi vượt ngưỡng']},
+    {em:'⚡',t:'Lớp 3 – Hành động',c:'#fffbeb',bd:'#fde68a',dc:'#fbbf24',tc:'#713f12',items:['PWA Dashboard – cài trên điện thoại','Hướng dẫn cá nhân hoá theo AQI','Checklist đồ cần mang theo mức độ','Toast notification có emoji','Báo cáo + timeline sự kiện ngày']},
+  ].map(l=>`
+    <div class="arch-layer" style="background:${l.c};border-color:${l.bd}">
+      <div class="arch-layer-title" style="color:${l.tc}">${l.em} ${l.t}</div>
+      <div class="arch-items">
+        ${l.items.map(it=>`<div class="arch-item"><div class="arch-dot" style="background:${l.dc}"></div>${it}</div>`).join('')}
+      </div>
+    </div>`).join('');
+
+  document.getElementById('dataFlowWrap').innerHTML=`
+  <div style="font-size:12px;font-weight:900;color:#1f2937;margin-bottom:14px">🔄 Luồng dữ liệu thật – từ sensor đến điện thoại</div>
+  <div style="display:flex;flex-direction:column;gap:0">
+    ${[
+      {a:'PMS7003',b:'ESP32',desc:'UART Serial · 9600bps · Frame 32 bytes · parse PM1/PM2.5/PM10',arrow:'↓'},
+      {a:'ESP32',b:'Internet',desc:'WiFi → HTTP POST "/api/sensor" · JSON payload · hoặc MQTT publish',arrow:'↓'},
+      {a:'Server',b:'DB + AI',desc:'Node.js lưu vào Redis/Firebase · Chạy AI analysis · Phát WebSocket event',arrow:'↓'},
+      {a:'WebSocket',b:'PWA',desc:'Browser nhận event → update UI tức thì · Không cần refresh trang',arrow:''},
+    ].map(r=>`
+    <div style="display:flex;gap:0;align-items:center">
+      <div style="flex:1;padding:10px 12px;background:#f9fafb;border-radius:10px;border:1.5px solid #e5e7eb;margin:3px 0">
+        <div style="font-size:10px;font-weight:800;color:#2dd4a0;margin-bottom:2px">${r.a} → ${r.b}</div>
+        <div style="font-size:10px;font-weight:600;color:#6b7280">${r.desc}</div>
+      </div>
+    </div>
+    ${r.arrow?`<div style="text-align:center;font-size:16px;color:#d1d5db;padding:2px 0">↓</div>`:''}`).join('')}
+  </div>`;
+}
+
+/* ─────────────────────────────────────────
+   10. NAVIGATION
+───────────────────────────────────────── */
+const SCREENS = ['home','sensors','report','tips','about'];
+const INITED  = {};
+
+function goTo(id, el) {
+  SCREENS.forEach(s => {
+    document.getElementById('sc-'+s).classList.remove('active');
+    document.querySelector(`[data-nav="${s}"]`).classList.remove('active');
+  });
+  document.getElementById('sc-'+id).classList.add('active');
+  el.classList.add('active');
+  document.getElementById('mainArea').scrollTop = 0;
+
+  if (!INITED[id]) {
+    INITED[id] = true;
+    if (id==='sensors') { renderSensorCards(); renderCmpChart(); renderHwGuide(); }
+    if (id==='report')  { renderReport(); }
+    if (id==='tips')    { renderFullTips(); }
+    if (id==='about')   { renderAbout(); }
   }
-
-  const chartOpts = (color) => ({
-    responsive: true, maintainAspectRatio: false,
-    plugins: { legend: { display: false } },
-    scales: {
-      x: { ticks: { color: '#3d5a75', font: { size: 9, family: "'DM Mono'" } }, grid: { color: 'rgba(30,50,72,.6)' } },
-      y: { min: 0, ticks: { color: '#3d5a75', font: { size: 9 } }, grid: { color: 'rgba(30,50,72,.6)' } }
-    }
-  });
-
-  if (hist1Chart) hist1Chart.destroy();
-  if (hist2Chart) hist2Chart.destroy();
-
-  hist1Chart = new Chart(document.getElementById('hist1'), {
-    type: 'line',
-    data: { labels, datasets: [
-      { data: d1, borderColor: '#00e5c8', backgroundColor: 'rgba(0,229,200,.07)', fill: true, tension: .4, pointRadius: 0, borderWidth: 2 },
-      { data: Array(labels.length).fill(35.4), borderColor: 'rgba(245,158,11,.35)', borderDash: [4,4], pointRadius: 0, fill: false, borderWidth: 1 },
-    ]},
-    options: chartOpts('#00e5c8')
-  });
-
-  hist2Chart = new Chart(document.getElementById('hist2'), {
-    type: 'line',
-    data: { labels, datasets: [
-      { data: d2, borderColor: '#a78bfa', backgroundColor: 'rgba(167,139,250,.07)', fill: true, tension: .4, pointRadius: 0, borderWidth: 2 },
-      { data: Array(labels.length).fill(35.4), borderColor: 'rgba(245,158,11,.35)', borderDash: [4,4], pointRadius: 0, fill: false, borderWidth: 1 },
-    ]},
-    options: chartOpts('#a78bfa')
-  });
-
-  renderHistStats(mode, d1, d2);
 }
 
-function renderHistStats(mode, d1, d2) {
-  d1 = d1 || historyOutdoor; d2 = d2 || historyIndoor;
-  const avg1 = (d1.reduce((a,b)=>a+b,0)/d1.length).toFixed(1);
-  const avg2 = (d2.reduce((a,b)=>a+b,0)/d2.length).toFixed(1);
-  const peak1 = Math.max(...d1).toFixed(1);
-  const peak2 = Math.max(...d2).toFixed(1);
-  const lv1 = AQI.level(parseFloat(avg1));
-  const lv2 = AQI.level(parseFloat(avg2));
-
-  document.getElementById('hist-stats').innerHTML = `
-    <div class="stat-box"><div class="stat-box-label">TB Sân trường</div>
-      <div class="stat-box-val" style="color:${lv1.color}">${avg1}</div>
-      <div class="stat-box-node">µg/m³ PM2.5 · ${lv1.label}</div></div>
-    <div class="stat-box"><div class="stat-box-label">Đỉnh Sân trường</div>
-      <div class="stat-box-val" style="color:${AQI.level(parseFloat(peak1)).color}">${peak1}</div>
-      <div class="stat-box-node">µg/m³ PM2.5 cao nhất</div></div>
-    <div class="stat-box"><div class="stat-box-label">TB Không gian mở</div>
-      <div class="stat-box-val" style="color:${lv2.color}">${avg2}</div>
-      <div class="stat-box-node">µg/m³ PM2.5 · ${lv2.label}</div></div>
-    <div class="stat-box"><div class="stat-box-label">Đỉnh Không gian mở</div>
-      <div class="stat-box-val" style="color:${AQI.level(parseFloat(peak2)).color}">${peak2}</div>
-      <div class="stat-box-node">µg/m³ PM2.5 cao nhất</div></div>
-  `;
-}
-
-function switchTab(btn, mode) {
-  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+function switchNode(idx, btn) {
+  activeNode = idx;
+  document.querySelectorAll('.node-tab').forEach(b=>b.classList.remove('active'));
   btn.classList.add('active');
-  renderHistCharts(mode);
+  renderHero(); renderDecision(); renderGear();
+  const s = NODES[idx];
+  const lv = AQI.level(s.reading.pm25);
+  showToast(s.icon, `Đang xem: ${s.name}`, `PM2.5 = ${s.reading.pm25} µg/m³ · ${lv.lbl} ${lv.em}`, 'info');
 }
 
-/* ── 7. AI FORECAST ── */
-function initAI() {
-  SENSORS.forEach((s, idx) => {
-    // Tạo dữ liệu dự báo (giả lập model tuyến tính + noise)
-    const hist = s.history.slice(-6); // 6h gần nhất
-    const trend = (hist[hist.length-1] - hist[0]) / hist.length;
-    const forecast = Array.from({length: 6}, (_, i) =>
-      Math.max(2, Math.round((hist[hist.length-1] + trend * (i+1) + (Math.random()-0.4)*8) * 10) / 10)
-    );
+/* ─────────────────────────────────────────
+   11. TOAST SYSTEM
+───────────────────────────────────────── */
+const TOAST_THEME = {
+  success:{c:'#f0fdf4',bd:'#bbf7d0'},
+  warning:{c:'#fff7ed',bd:'#fed7aa'},
+  danger: {c:'#fef2f2',bd:'#fecaca'},
+  info:   {c:'#e0f4ff',bd:'#bae6fd'},
+};
 
-    const allLabels = [
-      ...Array.from({length:6}, (_,i) => `-${5-i}h`),
-      ...Array.from({length:6}, (_,i) => `+${i+1}h`),
-    ];
-    const combined = [...hist, ...forecast];
+function showToast(emoji, title, body, type='info') {
+  const th = TOAST_THEME[type] || TOAST_THEME.info;
+  const id = 'ts'+Date.now();
+  const el = document.createElement('div');
+  el.className = 'toast';
+  el.id = id;
+  el.style.background = th.c;
+  el.style.borderColor = th.bd;
+  el.innerHTML = `<div class="toast-icon">${emoji}</div>
+    <div style="flex:1"><div class="toast-title">${title}</div><div class="toast-body">${body}</div></div>
+    <button class="toast-x" onclick="dismissToast('${id}')">×</button>`;
+  document.getElementById('toast-root').appendChild(el);
+  setTimeout(()=>dismissToast(id), 6000);
+}
 
-    new Chart(document.getElementById(`forecastChart${idx+1}`), {
-      type: 'line',
-      data: {
-        labels: allLabels,
-        datasets: [
-          {
-            label: 'Lịch sử', data: [...hist, ...Array(6).fill(null)],
-            borderColor: s.accentColor, backgroundColor: s.dimColor,
-            fill: true, tension: .4, pointRadius: 0, borderWidth: 2,
-          },
-          {
-            label: 'Dự báo AI', data: [...Array(5).fill(null), hist[hist.length-1], ...forecast],
-            borderColor: s.accentColor, backgroundColor: 'transparent',
-            borderDash: [5,3], tension: .4, pointRadius: 3,
-            pointBackgroundColor: s.accentColor, borderWidth: 2,
-          }
-        ]
-      },
-      options: {
-        responsive: true, maintainAspectRatio: false,
-        plugins: { legend: { display: false } },
-        scales: {
-          x: { ticks: { color: '#3d5a75', font: { size: 9, family: "'DM Mono'" } }, grid: { color: 'rgba(30,50,72,.6)' } },
-          y: { min: 0, ticks: { color: '#3d5a75', font: { size: 9 } }, grid: { color: 'rgba(30,50,72,.6)' } }
-        }
-      }
-    });
+function dismissToast(id) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.classList.add('out');
+  setTimeout(()=>el.remove(), 250);
+}
 
-    const peakFC = Math.max(...forecast);
-    const lvFC = AQI.level(peakFC);
-    document.getElementById(`fc-insight-${idx+1}`).innerHTML =
-      `<strong style="color:${lvFC.color}">Dự báo đỉnh: ${peakFC} µg/m³ (${lvFC.label})</strong> trong 6h tới. ` +
-      `Xu hướng ${trend > 0 ? '↑ tăng' : '↓ giảm'} khoảng ${Math.abs(trend).toFixed(1)} µg/h. ` +
-      (peakFC > 35.4 ? 'Cảnh báo: Dự báo vượt ngưỡng trung bình. Nên chuẩn bị khẩu trang.' : 'Chất lượng ổn định, duy trì theo dõi.');
+/* ─────────────────────────────────────────
+   12. REAL-TIME SIMULATION
+   Replace this with WebSocket in production:
+   const ws = new WebSocket('ws://your-server/ws');
+   ws.onmessage = e => { const d=JSON.parse(e.data); updateFromSensor(d); };
+───────────────────────────────────────── */
+function simulateNewReading() {
+  NODES.forEach(s => {
+    const last = s.history[s.history.length-1];
+    const newVal = Math.max(2, +(last + (Math.random()-.4)*7).toFixed(1));
+    s.history.push(newVal); s.history.shift();
+    s.reading = makeReading(s.history);
+    s.updated = 'vừa xong';
   });
 
-  // Rule Engine
-  document.getElementById('rules-grid').innerHTML = [
-    {trigger:'PM2.5 > 150', condition:'Kém (AQI>200)', action:'→ Gửi thông báo khẩn · Kích hoạt lọc không khí · Đề xuất ở trong nhà', color:'var(--red)'},
-    {trigger:'PM2.5 > 55',  condition:'Nhóm nhạy cảm', action:'→ Cảnh báo push · Hiển thị khuyến nghị · Log sự kiện vào DB', color:'var(--amber)'},
-    {trigger:'PM2.5 > 35',  condition:'Trung bình', action:'→ Thông báo nhẹ · Hiển thị icon cảnh báo trên dashboard', color:'var(--purple)'},
-    {trigger:'Xu hướng tăng >5µg/h', condition:'Dự báo vượt ngưỡng', action:'→ Cảnh báo sớm 2h trước · Gợi ý lịch học ngoài trời', color:'var(--cyan)'},
-    {trigger:'Node offline >5 phút', condition:'Mất kết nối', action:'→ Cảnh báo admin · Fallback sang node còn lại', color:'var(--red)'},
-    {trigger:'PM2.5 ≤ 12', condition:'Tốt (AQI≤50)', action:'→ Hiển thị "Môi trường tốt" · Khuyến khích hoạt động ngoài', color:'var(--green)'},
-  ].map(r => `
-    <div class="rule-card">
-      <div class="rule-trigger" style="color:${r.color}">${r.trigger}</div>
-      <div class="rule-condition" style="font-size:11px;margin-bottom:6px">${r.condition}</div>
-      <div class="rule-action" style="font-size:11px;color:#7a95b0">${r.action}</div>
-    </div>
-  `).join('');
+  // Re-render home
+  renderHero(); renderDecision(); renderGear();
 
-  // Architecture diagram
-  document.getElementById('arch-diagram').innerHTML = `
-    <div class="arch-layer" style="border-color:rgba(0,229,200,.2)">
-      <div class="arch-layer-title" style="color:#00e5c8">Lớp IoT</div>
-      <div class="arch-layer-items">
-        <div class="arch-item">PMS7003 Node A</div>
-        <div class="arch-item">PMS7003 Node B</div>
-        <div class="arch-item">UART 9600bps</div>
-        <div class="arch-item">ESP32 WiFi</div>
-        <div class="arch-item">MQTT/HTTP</div>
-      </div>
-    </div>
-    <div class="arch-arrow">→</div>
-    <div class="arch-layer" style="border-color:rgba(167,139,250,.2)">
-      <div class="arch-layer-title" style="color:#a78bfa">Lớp AI</div>
-      <div class="arch-layer-items">
-        <div class="arch-item">Rule Engine</div>
-        <div class="arch-item">Dự báo xu hướng</div>
-        <div class="arch-item">Phát hiện bất thường</div>
-        <div class="arch-item">AQI Scoring</div>
-        <div class="arch-item">Alert Generator</div>
-      </div>
-    </div>
-    <div class="arch-arrow">→</div>
-    <div class="arch-layer" style="border-color:rgba(245,158,11,.2)">
-      <div class="arch-layer-title" style="color:#f59e0b">Lớp Hành động</div>
-      <div class="arch-layer-items">
-        <div class="arch-item">Dashboard Web/App</div>
-        <div class="arch-item">Push Notification</div>
-        <div class="arch-item">Cảnh báo tức thì</div>
-        <div class="arch-item">Kích hoạt lọc KK</div>
-        <div class="arch-item">Báo cáo định kỳ</div>
-      </div>
-    </div>
-  `;
-}
-
-/* ── 8. ALERTS ── */
-function initAlerts() {
-  const alerts = [
-    {
-      level: 'high', icon: '⚠',
-      title: 'PM2.5 vượt ngưỡng Kém – Sân trường ULIS',
-      body: `Node A ghi nhận PM2.5 = ${SENSORS[0].reading.pm25} µg/m³, vượt ngưỡng 55 µg/m³. Ảnh hưởng đến toàn bộ người hoạt động ngoài trời trong khuôn viên. Nguồn có thể từ giao thông giờ cao điểm trên đường Phạm Văn Đồng.`,
-      time: '07:32 – Hôm nay', node: 'Node A · Sân trường ULIS',
-      tags: ['Đeo khẩu trang N95', 'Hạn chế ra ngoài', 'Đóng cửa sổ phòng học'],
-      tagColor: 'rgba(244,63,94,.15)', tagBorder: 'rgba(244,63,94,.3)', tagText: '#f43f5e',
-      bg: 'rgba(244,63,94,.04)', iconBg: 'rgba(244,63,94,.15)'
-    },
-    {
-      level: 'medium', icon: '⚡',
-      title: 'Nhóm nhạy cảm cần chú ý – Không gian mở',
-      body: `Node B ghi nhận PM2.5 = ${SENSORS[1].reading.pm25} µg/m³. Trẻ em, người cao tuổi và người có bệnh hô hấp/tim mạch nên hạn chế hoạt động trong hành lang và khu vực thông thoáng.`,
-      time: '06:15 – Hôm nay', node: 'Node B · Không gian mở',
-      tags: ['Đeo khẩu trang', 'Bật máy lọc không khí', 'Theo dõi tiếp'],
-      tagColor: 'rgba(245,158,11,.15)', tagBorder: 'rgba(245,158,11,.3)', tagText: '#f59e0b',
-      bg: 'rgba(245,158,11,.03)', iconBg: 'rgba(245,158,11,.15)'
-    },
-    {
-      level: 'low', icon: 'ℹ',
-      title: 'Xu hướng PM2.5 tăng – Dự báo vượt ngưỡng',
-      body: 'AI phát hiện xu hướng tăng đều trong 3 giờ qua tại Node A. Dự báo PM2.5 có thể đạt 65–75 µg/m³ vào 8h–9h sáng. Khuyến nghị thông báo sớm cho sinh viên có lịch học ngoài trời.',
-      time: '05:50 – Hôm nay', node: 'AI Forecast Engine',
-      tags: ['Cảnh báo sớm', 'Xem dự báo AI', 'Lên kế hoạch thay thế'],
-      tagColor: 'rgba(0,229,200,.1)', tagBorder: 'rgba(0,229,200,.25)', tagText: '#00e5c8',
-      bg: 'rgba(0,229,200,.03)', iconBg: 'rgba(0,229,200,.15)'
-    },
-    {
-      level: 'low', icon: '✓',
-      title: 'Môi trường tốt – Cuối buổi chiều hôm qua',
-      body: 'PM2.5 cả 2 node đạt mức Tốt (≤12 µg/m³) từ 15h–17h hôm qua. Thời điểm lý tưởng cho hoạt động ngoài trời. Hệ thống đã tự động thông báo "Môi trường trong lành" đến người dùng.',
-      time: '15:00 – Hôm qua', node: 'Cả 2 node',
-      tags: ['Hoạt động ngoài trời OK', 'Tập thể dục an toàn'],
-      tagColor: 'rgba(34,197,94,.1)', tagBorder: 'rgba(34,197,94,.25)', tagText: '#22c55e',
-      bg: 'rgba(34,197,94,.02)', iconBg: 'rgba(34,197,94,.15)'
-    },
-  ];
-
-  const borderColors = {high: '#f43f5e', medium: '#f59e0b', low: '#00e5c8'};
-
-  document.getElementById('alerts-list').innerHTML = alerts.map(a => `
-    <div class="alert-item level-${a.level}" style="border-color:${borderColors[a.level]};background:${a.bg}">
-      <div class="alert-icon-wrap" style="background:${a.iconBg}">${a.icon}</div>
-      <div style="flex:1">
-        <div class="alert-title">${a.title}</div>
-        <div class="alert-body">${a.body}</div>
-        <div class="alert-meta">${a.time} · ${a.node}</div>
-        <div class="alert-tags">
-          ${a.tags.map(t => `<span class="alert-tag" style="background:${a.tagColor};border-color:${a.tagBorder};color:${a.tagText}">${t}</span>`).join('')}
-        </div>
-      </div>
-    </div>
-  `).join('');
-}
-
-/* ── 9. ABOUT ── */
-function initAbout() {
-  document.getElementById('about-content').innerHTML = `
-    <div class="about-hero">
-      <div class="about-tagline">Smart Campus · ULIS 2025</div>
-      <div class="about-title">Smart Campus Air Shield</div>
-      <div class="about-desc">Hệ thống tích hợp IoT và AI nhằm giám sát, phân tích và phản ứng với chất lượng không khí theo thời gian thực trong khuôn viên trường đại học – từ đó nâng cao sức khỏe và hiệu quả học tập của cộng đồng ULIS.</div>
-    </div>
-
-    <div class="about-cards">
-      <div class="about-card">
-        <div class="about-card-icon">📡</div>
-        <div class="about-card-title" style="color:#00e5c8">Lớp IoT – Thu thập</div>
-        <div class="about-card-body">Mạng cảm biến PMS7003 đặt tại sân trường và không gian mở. Đo PM1.0, PM2.5, PM10 theo thời gian thực. Biến môi trường "vô hình" thành dữ liệu cụ thể.</div>
-      </div>
-      <div class="about-card">
-        <div class="about-card-icon">🧠</div>
-        <div class="about-card-title" style="color:#a78bfa">Lớp AI – Xử lý</div>
-        <div class="about-card-body">Rule Engine phát hiện vượt ngưỡng tức thì. Mô hình dự báo xu hướng theo chuỗi thời gian. Không chỉ đo – mà còn hiểu và dự đoán.</div>
-      </div>
-      <div class="about-card">
-        <div class="about-card-icon">⚡</div>
-        <div class="about-card-title" style="color:#f59e0b">Lớp Hành động</div>
-        <div class="about-card-body">Dashboard web hiển thị bản đồ AQI, gửi cảnh báo push, tự động kích hoạt hệ thống lọc không khí. Biến dữ liệu thành hành động thực tế.</div>
-      </div>
-    </div>
-
-    <div class="about-hw">
-      <div class="section-label">Phần cứng & Công nghệ</div>
-      <div class="hw-row">
-        ${['PMS7003 Sensor','ESP32 / Arduino Nano','UART 9600bps','WiFi 2.4GHz','MQTT Protocol','Chart.js','Rule-based AI','HTML/CSS/JS'].map(h =>
-          `<span class="hw-chip"><strong style="color:#e2eaf4">${h}</strong></span>`
-        ).join('')}
-      </div>
-    </div>
-  `;
-}
-
-/* ── 10. REAL-TIME SIMULATION ── */
-function refreshData() {
-  // Mô phỏng nhận data mới từ sensor (thay bằng fetch('/api/readings') khi có ESP32)
-  SENSORS.forEach(s => {
-    const last = s.history[s.history.length - 1];
-    const newVal = Math.max(2, Math.round((last + (Math.random() - 0.4) * 8) * 10) / 10);
-    s.history.push(newVal);
-    s.history.shift();
-    s.reading = currentReading(s.history);
-    s.lastUpdate = 'vừa xong';
-  });
-
-  // Re-render hero cards và metrics
-  renderHeroCards();
-  updateMetricsRow();
-  updateAIInsight();
-
-  // Update live chart
-  if (liveChart) {
-    liveChart.data.datasets[0].data = [...historyOutdoor];
-    liveChart.data.datasets[1].data = [...historyIndoor];
-    liveChart.update('none');
+  // Alert if dangerous spike
+  const s = NODES[activeNode];
+  const lv = AQI.level(s.reading.pm25);
+  if (['unhealthy','very','hazardous'].includes(lv.k)) {
+    showToast('⚠️', `Cảnh báo: ${s.name}`,
+      `PM2.5 = ${s.reading.pm25} µg/m³ (${lv.lbl} ${lv.em}). Xem hướng dẫn bên dưới!`, 'danger');
+    document.getElementById('reportBadge').style.display = 'block';
   }
-
-  // Reset sensor screen để re-init với data mới
-  window._sensorsInited = false;
 }
 
-/* ── 11. CLOCK & AUTO-REFRESH ── */
-function updateClock() {
-  const now = new Date();
-  document.getElementById('clock').textContent =
-    now.toLocaleTimeString('vi-VN', {hour:'2-digit',minute:'2-digit',second:'2-digit'});
-}
-
-/* ── INIT ── */
-document.addEventListener('DOMContentLoaded', () => {
-  bindNavLinks();
-  updateClock();
-  setInterval(updateClock, 1000);
-  setInterval(() => { refreshData(); }, 15000); // auto-refresh mỗi 15s
-  initDashboard();
+/* ─────────────────────────────────────────
+   13. PWA INSTALL PROMPT
+───────────────────────────────────────── */
+let deferredPrompt;
+window.addEventListener('beforeinstallprompt', e => {
+  e.preventDefault();
+  deferredPrompt = e;
+  document.getElementById('installBannerWrap').style.display = 'block';
 });
 
-/* ── API INTEGRATION GUIDE (comment) ──
-   Khi ESP32 gửi data thật, thay refreshData() bằng:
+document.getElementById('installBtn').addEventListener('click', () => {
+  if (!deferredPrompt) {
+    showToast('📱','Cài đặt thủ công','iOS: nhấn nút Chia sẻ → "Thêm vào màn hình chính"\nAndroid Chrome: menu 3 chấm → "Thêm vào màn hình chính"','info');
+    return;
+  }
+  deferredPrompt.prompt();
+  deferredPrompt.userChoice.then(r => {
+    if (r.outcome==='accepted') showToast('🎉','Đã cài app thành công!','Smart Campus Air Shield đã xuất hiện trên màn hình điện thoại của bạn 💚','success');
+    deferredPrompt = null;
+    document.getElementById('installBannerWrap').style.display = 'none';
+  });
+});
 
-   async function fetchFromESP32() {
-     const res = await fetch('http://ESP32_IP/api/readings'); // hoặc MQTT
-     const data = await res.json();
-     // data = { nodeA: {pm1:8, pm25:12, pm10:22}, nodeB: {pm1:5, pm25:8, pm10:15} }
-     SENSORS[0].reading = data.nodeA;
-     SENSORS[1].reading = data.nodeB;
-     renderHeroCards();
-     updateMetricsRow();
-   }
+/* ─────────────────────────────────────────
+   14. SERVICE WORKER REGISTER
+───────────────────────────────────────── */
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('/sw.js')
+    .then(() => console.log('✅ Service Worker registered – PWA ready'))
+    .catch(e => console.warn('SW reg failed:', e));
+}
 
-   Hoặc dùng Firebase Realtime DB:
-   import { getDatabase, ref, onValue } from 'firebase/database';
-   onValue(ref(db, 'sensors'), snapshot => { ... });
-*/
+/* ─────────────────────────────────────────
+   15. CLOCK
+───────────────────────────────────────── */
+function updateClock() {
+  const now = new Date();
+  document.getElementById('clkTime').textContent =
+    now.toLocaleTimeString('vi-VN',{hour:'2-digit',minute:'2-digit'});
+  const days=['CN','T2','T3','T4','T5','T6','T7'];
+  document.getElementById('clkDate').textContent =
+    `${days[now.getDay()]} ${now.getDate()}/${now.getMonth()+1}`;
+}
+
+/* ─────────────────────────────────────────
+   INIT
+───────────────────────────────────────── */
+renderHero(); renderDecision(); renderGear(); renderTipsHome(); renderThresh();
+updateClock();
+setInterval(updateClock, 1000);
+setInterval(simulateNewReading, 15000); // mock 15s refresh
+
+// Welcome toasts
+setTimeout(() => {
+  const s=NODES[0]; const lv=AQI.level(s.reading.pm25);
+  showToast('🌿','Chào mừng đến Smart Campus Air Shield!',
+    `Sân trường ULIS: PM2.5 = ${s.reading.pm25} µg/m³ · ${lv.lbl} ${lv.em}`,
+    lv.k==='good'?'success':lv.k==='moderate'?'info':'warning');
+}, 1200);
+
+setTimeout(() => {
+  const s=NODES[1]; const lv=AQI.level(s.reading.pm25);
+  showToast(s.icon,'Không gian mở – Node B',
+    `PM2.5 = ${s.reading.pm25} µg/m³ · ${lv.lbl} ${lv.em}`, 'info');
+}, 3500);
+
+// iOS install hint (no beforeinstallprompt on Safari)
+const isIOS = /iphone|ipad|ipod/.test(navigator.userAgent.toLowerCase());
+const isInStandalone = window.navigator.standalone === true;
+if (isIOS && !isInStandalone) {
+  setTimeout(() => {
+    showToast('📲','Cài app trên iPhone/iPad',
+      'Nhấn nút Chia sẻ 📤 ở thanh dưới → chọn "Thêm vào màn hình chính" ← dùng được như app thật!','info');
+  }, 5000);
+}
